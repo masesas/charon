@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  charon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: charon-engine
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Persist SQLite database
+      - charon-data:/app/data
+      # Optional: mount logs
+      - charon-logs:/app/logs
+    networks:
+      - charon-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Uncomment to expose metrics/health endpoint if added
+    # ports:
+    #   - "3000:3000"
+
+  # Optional: Add monitoring stack
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: charon-prometheus
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml
+  #     - prometheus-data:/prometheus
+  #   ports:
+  #     - "9090:9090"
+  #   networks:
+  #     - charon-net
+
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   container_name: charon-grafana
+  #   restart: unless-stopped
+  #   volumes:
+  #     - grafana-data:/var/lib/grafana
+  #   ports:
+  #     - "3001:3000"
+  #   networks:
+  #     - charon-net
+  #   environment:
+  #     - GF_SECURITY_ADMIN_PASSWORD=admin
+
+volumes:
+  charon-data:
+    driver: local
+  charon-logs:
+    driver: local
+  # prometheus-data:
+  #   driver: local
+  # grafana-data:
+  #   driver: local
+
+networks:
+  charon-net:
+    driver: bridge
