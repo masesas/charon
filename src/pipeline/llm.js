@@ -110,7 +110,10 @@ export async function decideCandidateBatch(rows, triggerCandidateId) {
   };
 
   try {
-    const res = await axios.post(`${LLM_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
+    // Support both OpenAI-style (/v1/chat/completions) and 9router-style (/api/v1/chat/completions)
+    const baseUrl = LLM_BASE_URL.replace(/\/$/, '');
+    const endpoint = baseUrl.includes('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+    const res = await axios.post(endpoint, {
       model: LLM_MODEL,
       temperature: 0.2,
       messages: [

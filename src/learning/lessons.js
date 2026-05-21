@@ -40,7 +40,10 @@ export async function generateLessons(summary) {
   const fallback = fallbackLessons(summary);
   if (!ENABLE_LLM || !LLM_API_KEY) return { lessons: fallback, raw: { fallback: true } };
   try {
-    const res = await axios.post(`${LLM_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
+    // Support both OpenAI-style (/v1/chat/completions) and 9router-style (/api/v1/chat/completions)
+    const baseUrl = LLM_BASE_URL.replace(/\/$/, '');
+    const endpoint = baseUrl.includes('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+    const res = await axios.post(endpoint, {
       model: LLM_MODEL,
       temperature: 0.1,
       messages: [
