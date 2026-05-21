@@ -201,6 +201,9 @@ export function initDb() {
   `);
   ensureColumn('candidates', 'signal_key', 'TEXT');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_signal_key ON candidates(signal_key) WHERE signal_key IS NOT NULL');
+  ensureColumn('candidates', 'confidence_score', 'REAL');
+  ensureColumn('candidates', 'risk_score', 'REAL');
+  ensureColumn('candidates', 'quality_score', 'REAL');
   ensureColumn('dry_run_positions', 'execution_mode', "TEXT DEFAULT 'dry_run'");
   ensureColumn('dry_run_positions', 'entry_signature', 'TEXT');
   ensureColumn('dry_run_positions', 'exit_signature', 'TEXT');
