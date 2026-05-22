@@ -140,3 +140,56 @@ export function createLivePosition(candidateId, candidate, decision, swap, reaso
     return positionId;
   })();
 }
+
+/**
+ * Check and update near-miss tracking for a position
+ * A near-miss is when price came within 5% of TP or SL but didn't trigger
+ */
+export function updateNearMiss(positionId, currentPrice) {
+  const position = db.prepare('SELECT * FROM dry_run_positions WHERE id = ?').get(positionId);
+  if (!position || position.status !== 'open' || !position.entry_price || !currentPrice) return;
+
+  const entryPrice = Number(position.entry_price);
+  const tpPercent = Number(position.tp_percent);
+  const slPercent = Number(position.sl_percent);
+  
+  const currentGainPercent = ((currentPrice - entryPrice) / entryPrice) * 100;
+  
+  // TP near-miss: within 5% of TP target
+  const tpThreshold = tpPercent * 0.95;
+  if (currentGainPercent >= tpThreshold && currentGainPercent < tpPercent) {
+    const existing = position.near_miss_tp_percent;
+    if (!existing || currentGainPercent > existing) {
+      db.prepare(`
+        UPDATE dry_run_positions 
+        SET near_miss_tp_percent = ?, near_miss_tp_at_ms = ?
+        WHERE id = ?
+      `).run(currentGainPercent, now(), positionId);
+    }
+  }
+  
+  // SL near-miss: within 5% of SL target (SL is negative)
+  const slThreshold = slPercent * 0.95; // e.g., -25% * 0.95 = -23.75%
+  if (currentGainPercent <= slThreshold && currentGainPercent > slPercent) {
+    const existing = position.near_miss_sl_percent;
+    if (!existing || currentGainPercent < existing) {
+      db.prepare(`
+        UPDATE dry_run_positions 
+        SET near_miss_sl_percent = ?, near_miss_sl_at_ms = ?
+        WHERE id = ?
+      `).run(currentGainPercent, now(), positionId);
+    }
+  }
+}
+
+/**
+ * Get positions with near-miss events
+ */
+export function getPositionsWithNearMiss(limit = 20) {
+  return db.prepare(`
+    SELECT * FROM dry_run_positions 
+    WHERE near_miss_tp_percent IS NOT NULL OR near_miss_sl_percent IS NOT NULL
+    ORDER BY closed_at_ms DESC, opened_at_ms DESC
+    LIMIT ?
+  `).all(limit);
+}

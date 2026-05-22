@@ -3,6 +3,7 @@ import { now, json } from '../utils.js';
 import { fetchJupiterAsset } from '../enrichment/jupiter.js';
 import { firstPositiveNumber } from '../utils.js';
 import { fetchJupiterChartContext } from '../enrichment/jupiter.js';
+import { updateNearMiss } from '../db/positions.js';
 
 let candidateHandler = null;
 
@@ -145,6 +146,11 @@ export async function snapshotOpenPositions() {
         INSERT INTO position_price_snapshots (position_id, mint, snapshot_at_ms, price_usd, market_cap_usd, distance_from_ath_percent, source)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `).run(pos.id, pos.mint, now(), priceUsd || null, marketCapUsd || null, distanceFromAthPercent, 'jupiter');
+
+      // Check for near-miss TP/SL events
+      if (priceUsd) {
+        updateNearMiss(pos.id, priceUsd);
+      }
 
       captured++;
     } catch (err) {
