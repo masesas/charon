@@ -62,6 +62,7 @@ export function compactCandidateForLlm(row) {
     savedWalletExposure: c.savedWalletExposure,
     twitterNarrative: c.twitterNarrative,
     filters: c.filters,
+    scores: c.scores || null,
   };
 }
 
