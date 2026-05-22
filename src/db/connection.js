@@ -214,6 +214,10 @@ export function initDb() {
   ensureColumn('decision_logs', 'strategy_id', 'TEXT');
   ensureColumn('decision_logs', 'strategy_version_hash', 'TEXT');
   ensureColumn('strategies', 'strategy_hash', 'TEXT');
+  ensureColumn('dry_run_positions', 'near_miss_tp_percent', 'REAL');
+  ensureColumn('dry_run_positions', 'near_miss_tp_at_ms', 'INTEGER');
+  ensureColumn('dry_run_positions', 'near_miss_sl_percent', 'REAL');
+  ensureColumn('dry_run_positions', 'near_miss_sl_at_ms', 'INTEGER');
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS position_price_snapshots (
