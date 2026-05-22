@@ -35,11 +35,20 @@ export function compactCandidateForLlm(row) {
   const c = row.candidate;
   const athWindow = c.chart?.windows?.find(window => window.label === 'ath_context_24h_5m' && window.available)
     || c.chart?.windows?.find(window => window.label === 'recent_24h_5m' && window.available);
+  
+  // Compute source reliability score (Epic 6)
+  const sourceReliability = c.signals?.route 
+    ? computeSourceReliabilityScore(c.signals.route, c.signals.label)
+    : 0;
+  
   return {
     candidate_id: row.id,
     mint: c.token?.mint,
     route: c.signals?.route,
-    signals: c.signals,
+    signals: {
+      ...c.signals,
+      source_reliability_score: sourceReliability,
+    },
     token: c.token,
     metrics: c.metrics,
     feeClaim: c.feeClaim,
