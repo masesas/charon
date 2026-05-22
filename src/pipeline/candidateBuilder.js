@@ -5,6 +5,7 @@ import { fetchJupiterAsset, fetchJupiterHolders, fetchJupiterChartContext } from
 import { fetchSavedWalletExposure } from '../enrichment/wallets.js';
 import { fetchTwitterNarrative } from '../enrichment/twitter.js';
 import { gmgnLink } from '../format.js';
+import { scoreCandidate } from './scoring.js';
 
 export function buildFeeSnapshot(fee, signature) {
   return {
@@ -187,5 +188,9 @@ export async function buildCandidate({ mint, fee = null, signature = null, gradu
     createdAtMs: now(),
   };
   candidate.filters = filterCandidate(candidate);
-  return candidate;
+  
+  // Apply scoring to candidate
+  const scoredCandidate = scoreCandidate(candidate);
+  
+  return scoredCandidate;
 }
