@@ -1,5 +1,5 @@
 import { db } from './connection.js';
-import { now, json } from '../utils.js';
+import { now, json, computeStrategyHash } from '../utils.js';
 import { numSetting, boolSetting, setting, activeStrategy } from './settings.js';
 
 export function openPositions() {
@@ -28,6 +28,7 @@ export function allPositions(limit = 10) {
 
 export function createDryRunPosition(candidateId, candidate, decision, reason = 'llm_buy') {
   const strat = activeStrategy();
+  const strategyVersionHash = computeStrategyHash(strat);
   const sizeSol = strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
   const entryPrice = Number(candidate.metrics.priceUsd || 0) || null;
   const entryMcap = Number(candidate.metrics.marketCapUsd || candidate.metrics.graduatedMarketCapUsd || 0) || null;
@@ -46,8 +47,8 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
       INSERT INTO dry_run_positions (
         candidate_id, mint, symbol, status, opened_at_ms, size_sol, entry_price, entry_mcap,
         token_amount_est, high_water_price, high_water_mcap, tp_percent, sl_percent,
-        trailing_enabled, trailing_percent, trailing_armed, llm_decision_id, strategy_id, snapshot_json
-      ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+        trailing_enabled, trailing_percent, trailing_armed, llm_decision_id, strategy_id, strategy_version_hash, snapshot_json
+      ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
     `).run(
       candidateId,
       candidate.token.mint,
@@ -65,6 +66,7 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
       trailingPercent,
       decision.id || null,
       strat.id,
+      strategyVersionHash,
       json({ candidate, decision, reason, strategy: strat.id }),
     );
     const positionId = Number(result.lastInsertRowid);
@@ -82,6 +84,7 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
 
 export function createLivePosition(candidateId, candidate, decision, swap, reason = 'live_buy') {
   const strat = activeStrategy();
+  const strategyVersionHash = computeStrategyHash(strat);
   const sizeSol = strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
   const entryPrice = Number(candidate.metrics.priceUsd || 0) || null;
   const entryMcap = Number(candidate.metrics.marketCapUsd || candidate.metrics.graduatedMarketCapUsd || 0) || null;
@@ -101,8 +104,8 @@ export function createLivePosition(candidateId, candidate, decision, swap, reaso
         candidate_id, mint, symbol, status, opened_at_ms, size_sol, entry_price, entry_mcap,
         token_amount_est, high_water_price, high_water_mcap, tp_percent, sl_percent,
         trailing_enabled, trailing_percent, trailing_armed, llm_decision_id,
-        execution_mode, entry_signature, token_amount_raw, strategy_id, snapshot_json
-      ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'live', ?, ?, ?, ?)
+        execution_mode, entry_signature, token_amount_raw, strategy_id, strategy_version_hash, snapshot_json
+      ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'live', ?, ?, ?, ?, ?)
     `).run(
       candidateId,
       candidate.token.mint,
@@ -122,6 +125,7 @@ export function createLivePosition(candidateId, candidate, decision, swap, reaso
       swap.signature,
       swap.outputAmount || null,
       strat.id,
+      strategyVersionHash,
       json({ candidate, decision, reason, swap, strategy: strat.id }),
     );
     const positionId = Number(result.lastInsertRowid);

@@ -159,3 +159,15 @@ export function makeFailureTracker(name, alertFn, threshold = 3) {
     }
   };
 }
+
+export function computeStrategyHash(strategyConfig) {
+  // Create a stable JSON string from config (sorted keys)
+  const stable = JSON.stringify(strategyConfig, Object.keys(strategyConfig).sort());
+  // Simple hash function (FNV-1a)
+  let hash = 2166136261;
+  for (let i = 0; i < stable.length; i++) {
+    hash ^= stable.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
