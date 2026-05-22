@@ -104,6 +104,11 @@ export async function handleMessage(msg) {
     return bot.sendMessage(chatId, `Removed ${label}.`);
   }
   if (text.startsWith('/wallets')) return handleCallback({ id: 'manual', data: 'menu:wallets', message: { chat: { id: chatId } } });
+  if (text.startsWith('/position_history')) {
+    const positionId = Number(text.split(/\s+/)[1]);
+    if (!positionId) return bot.sendMessage(chatId, 'Usage: /position_history <position_id>');
+    return sendPositionHistory(chatId, positionId);
+  }
   if (text.startsWith('/setfilter')) {
     const { key, value } = parseSetFilter(text);
     const valid = new Set([
@@ -242,6 +247,7 @@ export function setupTelegram() {
     { command: 'strategy', description: 'Show/switch strategy' },
     { command: 'stratset', description: 'Set strategy config (stratset id key value)' },
     { command: 'positions', description: 'Show dry-run positions' },
+    { command: 'position_history', description: 'Show position price history' },
     { command: 'candidate', description: 'Show candidate by mint' },
     { command: 'filters', description: 'Show filters' },
     { command: 'pnl', description: 'Show saved-wallet PnL' },
@@ -302,4 +308,53 @@ function allPositions(limit = 10) {
 
 function savedWallets() {
   return db.prepare('SELECT * FROM saved_wallets ORDER BY label').all();
+}
+
+async function sendPositionHistory(chatId, positionId) {
+  const position = db.prepare('SELECT * FROM dry_run_positions WHERE id = ?').get(positionId);
+  if (!position) return bot.sendMessage(chatId, 'Position not found.');
+
+  const snapshots = db.prepare(`
+    SELECT * FROM position_price_snapshots
+    WHERE position_id = ?
+    ORDER BY snapshot_at_ms DESC
+    LIMIT 50
+  `).all(positionId);
+
+  if (!snapshots.length) {
+    return bot.sendMessage(chatId, `📍 Position #${positionId} has no price snapshots yet.`);
+  }
+
+  const lines = [
+    `📍 <b>Position #${positionId} Price History</b>`,
+    `Token: ${escapeHtml(position.symbol || position.mint.slice(0, 8))}`,
+    `Status: ${position.status}`,
+    '',
+    `<b>Time | Price | Mcap | ATH%</b>`,
+  ];
+
+  for (const snap of snapshots.slice(0, 20)) {
+    const time = new Date(snap.snapshot_at_ms).toISOString().slice(11, 16);
+    const price = snap.price_usd ? `$${Number(snap.price_usd).toExponential(2)}` : '—';
+    const mcap = snap.market_cap_usd ? `$${(snap.market_cap_usd / 1000).toFixed(1)}k` : '—';
+    const ath = snap.distance_from_ath_percent != null ? `${snap.distance_from_ath_percent.toFixed(1)}%` : '—';
+    lines.push(`${time} | ${price} | ${mcap} | ${ath}`);
+  }
+
+  // Near-miss info
+  if (position.near_miss_tp_percent != null || position.near_miss_sl_percent != null) {
+    lines.push('');
+    lines.push('<b>Near-Miss Events:</b>');
+    if (position.near_miss_tp_percent != null) {
+      lines.push(`• TP: came within ${position.near_miss_tp_percent.toFixed(1)}% of target`);
+    }
+    if (position.near_miss_sl_percent != null) {
+      lines.push(`• SL: came within ${position.near_miss_sl_percent.toFixed(1)}% of stop`);
+    }
+  }
+
+  lines.push('');
+  lines.push(`Total snapshots: ${snapshots.length}`);
+
+  await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' });
 }
