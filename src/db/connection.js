@@ -176,6 +176,15 @@ export function initDb() {
       config_json TEXT NOT NULL,
       created_at_ms INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS lesson_applications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      strategy_id TEXT NOT NULL,
+      lesson_id INTEGER NOT NULL,
+      applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      result TEXT,
+      FOREIGN KEY (strategy_id) REFERENCES strategies(id),
+      FOREIGN KEY (lesson_id) REFERENCES learning_lessons(id)
+    );
     CREATE TABLE IF NOT EXISTS price_alerts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       mint TEXT NOT NULL,
@@ -198,6 +207,8 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_decision_logs_mint ON decision_logs(selected_mint);
     CREATE INDEX IF NOT EXISTS idx_signal_events_mint ON signal_events(mint);
     CREATE INDEX IF NOT EXISTS idx_learning_lessons_status ON learning_lessons(status, created_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_lesson_applications_strategy ON lesson_applications(strategy_id);
+    CREATE INDEX IF NOT EXISTS idx_lesson_applications_lesson ON lesson_applications(lesson_id);
   `);
   ensureColumn('candidates', 'signal_key', 'TEXT');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_signal_key ON candidates(signal_key) WHERE signal_key IS NOT NULL');
@@ -213,6 +224,7 @@ export function initDb() {
   ensureColumn('dry_run_positions', 'strategy_version_hash', 'TEXT');
   ensureColumn('decision_logs', 'strategy_id', 'TEXT');
   ensureColumn('decision_logs', 'strategy_version_hash', 'TEXT');
+  ensureColumn('decision_logs', 'min_confidence_used', 'REAL');
 
   const defaults = {
     agent_enabled: 'true',
