@@ -28,6 +28,7 @@ import { executeLiveSell } from '../execution/router.js';
 import { handleCallback, editMenuMessage } from './callbacks.js';
 import { consumeNumericFilterInput } from './input.js';
 import { runLearning, sendLessons } from '../learning/commands.js';
+import { updateDailyMetricsOnClose, markDailyLossLimitTriggered, getRiskStatus } from '../execution/riskManager.js';
 import { fetchWalletPnl } from '../enrichment/wallets.js';
 
 export async function handleMessage(msg) {
@@ -109,6 +110,7 @@ export async function handleMessage(msg) {
     if (!positionId) return bot.sendMessage(chatId, 'Usage: /position_history <position_id>');
     return sendPositionHistory(chatId, positionId);
   }
+  if (text.startsWith('/risk_status')) return sendRiskStatus(chatId);
   if (text.startsWith('/setfilter')) {
     const { key, value } = parseSetFilter(text);
     const valid = new Set([
@@ -200,6 +202,8 @@ export async function closePosition(chatId, id, reason) {
     INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
     VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)
   `).run(id, row.mint, now(), price, mcap, row.size_sol, row.token_amount_est, reason, json({ pnlPercent, pnlSol, sell }));
+  // Track daily risk metrics
+  updateDailyMetricsOnClose({ pnl_sol: pnlSol, pnl_percent: pnlPercent });
   const label = row.execution_mode === 'live' ? 'Closed live position' : 'Closed dry-run position';
   await bot.sendMessage(chatId, `${label} #${id}: ${escapeHtml(reason)} ${fmtPct(pnlPercent)}`, { parse_mode: 'HTML' });
 }
@@ -357,4 +361,33 @@ async function sendPositionHistory(chatId, positionId) {
   lines.push(`Total snapshots: ${snapshots.length}`);
 
   await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' });
+}
+
+async function sendRiskStatus(chatId) {
+  const status = getRiskStatus();
+  const lines = [
+    '⚠️ <b>Risk Status</b>',
+    `Date: ${status.date}`,
+    '',
+    '<b>Daily Performance</b>',
+    `Trades: ${status.trades_count} (${status.wins_count}W / ${status.losses_count}L)`,
+    `Win Rate: ${status.win_rate_percent}%`,
+    `PnL: ${status.total_pnl_sol.toFixed(3)} SOL`,
+    '',
+    '<b>Loss Streak</b>',
+    `Current: ${status.loss_streak}/${status.loss_streak_limit}`,
+    `Max Today: ${status.max_loss_streak}`,
+    status.loss_streak >= status.loss_streak_limit ? '🔴 <b>LOSS STREAK LIMIT REACHED</b>' : '✅ OK',
+    '',
+    '<b>Daily Loss Limit</b>',
+    `Limit: ${status.daily_loss_limit_sol.toFixed(3)} SOL`,
+    `Remaining: ${status.daily_loss_limit_remaining_sol.toFixed(3)} SOL`,
+    status.daily_loss_limit_triggered ? '🔴 <b>DAILY LOSS LIMIT TRIGGERED</b>' : '✅ OK',
+    '',
+    '<b>Total Exposure</b>',
+    `Current: ${status.total_exposure_sol.toFixed(3)} SOL / ${status.total_exposure_limit_sol.toFixed(3)} SOL`,
+    `Remaining: ${status.exposure_remaining_sol.toFixed(3)} SOL`,
+  ];
+
+  await bot.sendMessage(chatId, lines.filter(Boolean).join('\n'), { parse_mode: 'HTML' });
 }

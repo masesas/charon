@@ -221,6 +221,22 @@ export function initDb() {
   ensureColumn('dry_run_positions', 'near_miss_sl_at_ms', 'INTEGER');
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS daily_risk_metrics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL UNIQUE,
+      trades_count INTEGER NOT NULL DEFAULT 0,
+      wins_count INTEGER NOT NULL DEFAULT 0,
+      losses_count INTEGER NOT NULL DEFAULT 0,
+      total_pnl_sol REAL NOT NULL DEFAULT 0,
+      total_pnl_percent REAL NOT NULL DEFAULT 0,
+      max_drawdown_percent REAL NOT NULL DEFAULT 0,
+      loss_streak INTEGER NOT NULL DEFAULT 0,
+      max_loss_streak INTEGER NOT NULL DEFAULT 0,
+      daily_loss_limit_sol REAL NOT NULL DEFAULT 0,
+      daily_loss_limit_triggered INTEGER NOT NULL DEFAULT 0,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS position_price_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       position_id INTEGER NOT NULL,

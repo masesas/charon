@@ -39,6 +39,12 @@ export const SIGNAL_SERVER_URL = process.env.SIGNAL_SERVER_URL || 'http://localh
 export const SIGNAL_SERVER_KEY = process.env.SIGNAL_SERVER_KEY || '';
 export const SIGNAL_POLL_MS = Number(process.env.SIGNAL_POLL_MS || 30_000);
 
+// Risk management settings
+export const RISK_MAX_DAILY_LOSS_SOL = Number(process.env.RISK_MAX_DAILY_LOSS_SOL || 1.0);
+export const RISK_MAX_LOSS_STREAK = Number(process.env.RISK_MAX_LOSS_STREAK || 3);
+export const RISK_MAX_POSITION_SIZE_PERCENT = Number(process.env.RISK_MAX_POSITION_SIZE_PERCENT || 10);
+export const RISK_MAX_TOTAL_EXPOSURE_SOL = Number(process.env.RISK_MAX_TOTAL_EXPOSURE_SOL || 5.0);
+
 export const JSON_HEADERS = {
   Accept: 'application/json, text/plain, */*',
   'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',

@@ -16,6 +16,7 @@ import { setDegenHandler } from '../signals/trending.js';
 import { setCandidateHandler } from '../signals/feeClaim.js';
 import { short } from '../format.js';
 import { escapeHtml } from '../format.js';
+import { checkRiskBeforeBuy } from '../execution/riskManager.js';
 
 export const seenSignalCandidates = new Map();
 
@@ -102,6 +103,31 @@ export async function processCandidateFromSignals(signals) {
       });
       return;
     }
+
+    const strat = activeStrategy();
+    const positionSizeSol = strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
+    const riskCheck = checkRiskBeforeBuy(positionSizeSol);
+    if (!riskCheck.allowed) {
+      console.log(`[risk] blocked buy ${selectedRow.candidate.token.mint}: ${riskCheck.reason}`);
+      logDecisionEvent({
+        batchId,
+        triggerCandidateId: candidateId,
+        selectedRow,
+        rows,
+        decision: batchDecision,
+        action: 'entry_blocked_risk',
+        guardrails: { riskReason: riskCheck.reason, positionSizeSol },
+      });
+      await sendTelegram([
+        '🛑 <b>Risk manager blocked buy</b>',
+        '',
+        candidateSummary(selectedRow.candidate, batchDecision),
+        '',
+        escapeHtml(riskCheck.reason),
+      ].join('\n'));
+      return;
+    }
+
     await handleApprovedBuy(selectedRow, batchDecision, batchId, rows, candidateId);
   } else {
     logDecisionEvent({

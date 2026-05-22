@@ -12,6 +12,7 @@ import { updateCandidateSnapshot } from '../db/candidates.js';
 import { trending } from '../signals/trending.js';
 import { executeLiveSell } from './router.js';
 import { sendPositionExit } from '../telegram/send.js';
+import { updateDailyMetricsOnClose, markDailyLossLimitTriggered, isDailyLossLimitExceeded } from './riskManager.js';
 
 export async function freshEntryMarket(mint, candidate) {
   const gmgn = await fetchGmgnTokenInfo(mint, false);
@@ -203,6 +204,9 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
       INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
       VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)
     `).run(position.id, position.mint, now(), price, mcap, position.size_sol, position.token_amount_est, exitReason, json({ pnlPercent: finalPnlPercent, pnlSol: finalPnlSol, receivedSol: receivedSol ?? null, sell }));
+    // Track daily risk metrics
+    updateDailyMetricsOnClose({ pnl_sol: finalPnlSol, pnl_percent: finalPnlPercent });
+    if (isDailyLossLimitExceeded()) markDailyLossLimitTriggered();
     closed = true;
   } else if (exitReason && autoExit) {
     db.prepare(`
@@ -214,6 +218,9 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
       INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
       VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)
     `).run(position.id, position.mint, now(), price, mcap, position.size_sol, position.token_amount_est, exitReason, json({ pnlPercent, pnlSol }));
+    // Track daily risk metrics
+    updateDailyMetricsOnClose({ pnl_sol: pnlSol, pnl_percent: pnlPercent });
+    if (isDailyLossLimitExceeded()) markDailyLossLimitTriggered();
     closed = true;
   }
   return {
