@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { GMGN_API_KEY, GMGN_CACHE_TTL_MS, GMGN_ENABLED, JSON_HEADERS } from '../config.js';
 import { now, sleep } from '../utils.js';
 import { numSetting, setting } from '../db/settings.js';
+import { recordHealthSuccess, recordHealthFailure } from '../health/providerHealth.js';
 
 const gmgnCache = new Map();
 let lastGmgnRequestAt = 0;
@@ -151,14 +152,17 @@ async function fetchGmgnTokenInfo(mint, useCache = true) {
     return null;
   }
 
+  const start = now();
   try {
     const payload = await gmgnFetch('/v1/token/info', {
       params: { chain: 'sol', address: mint },
     });
     const data = payload?.data?.data || payload?.data || payload;
     gmgnCache.set(mint, { at: now(), data });
+    recordHealthSuccess('gmgn', 'token_info', now() - start);
     return data;
   } catch (err) {
+    recordHealthFailure('gmgn', 'token_info', err);
     setGmgnBackoff('token', err);
     if (err.response?.status !== 403 && err.response?.status !== 429) {
       console.log(`[gmgn] ${mint.slice(0, 8)}... ${err.response?.status || ''} ${err.message}`);

@@ -255,7 +255,7 @@ export function initDb() {
       daily_loss_limit_triggered INTEGER NOT NULL DEFAULT 0,
       created_at_ms INTEGER NOT NULL,
       updated_at_ms INTEGER NOT NULL
-    );
+  db.exec(`
     CREATE TABLE IF NOT EXISTS position_price_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       position_id INTEGER NOT NULL,
@@ -268,6 +268,42 @@ export function initDb() {
     )
   `);
   db.exec('CREATE INDEX IF NOT EXISTS idx_position_snapshots_position ON position_price_snapshots(position_id, snapshot_at_ms)');
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS wallet_reconciliation_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      reconciliation_at_ms INTEGER NOT NULL,
+      wallet_address TEXT NOT NULL,
+      total_balance_sol REAL NOT NULL,
+      total_balance_usd REAL NOT NULL,
+      positions_count INTEGER NOT NULL,
+      orphaned_tokens_count INTEGER NOT NULL,
+      mismatches_count INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'completed',
+      summary_json TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_wallet_reconciliation_logs_wallet ON wallet_reconciliation_logs(wallet_address, reconciliation_at_ms)');
+
+  // Signal source performance tracking (Epic 6)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS signal_source_performance (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL,
+      signal_type TEXT NOT NULL,
+      total_signals INTEGER NOT NULL DEFAULT 0,
+      successful_signals INTEGER NOT NULL DEFAULT 0,
+      failed_signals INTEGER NOT NULL DEFAULT 0,
+      avg_time_to_close_ms REAL,
+      avg_pnl_percent REAL,
+      win_rate_percent REAL,
+      last_signal_at_ms INTEGER,
+      last_update_at_ms INTEGER NOT NULL,
+      UNIQUE(source, signal_type)
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_signal_source_performance_source ON signal_source_performance(source)');
 
   const defaults = {
     agent_enabled: 'true',
