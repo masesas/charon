@@ -219,6 +219,7 @@ export function initDb() {
   ensureColumn('dry_run_positions', 'near_miss_tp_at_ms', 'INTEGER');
   ensureColumn('dry_run_positions', 'near_miss_sl_percent', 'REAL');
   ensureColumn('dry_run_positions', 'near_miss_sl_at_ms', 'INTEGER');
+  ensureColumn('learning_lessons', 'applied_to_strategies', 'TEXT');
 
   // Reconciliation columns (Epic 5)
   ensureColumn('dry_run_positions', 'last_reconciled_at_ms', 'INTEGER');

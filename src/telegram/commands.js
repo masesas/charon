@@ -32,6 +32,7 @@ import { applyLesson, lessonResults } from '../learning/feedback.js';
 import { updateDailyMetricsOnClose, markDailyLossLimitTriggered, getRiskStatus } from '../execution/riskManager.js';
 import { fetchWalletPnl } from '../enrichment/wallets.js';
 import { getAllSourcePerformance, computeSourceReliabilityScore } from '../db/sourcePerformance.js';
+import { sendStatus } from './statusCommand.js';
 
 export async function handleMessage(msg) {
   const text = (msg.text || '').trim();
@@ -116,6 +117,7 @@ export async function handleMessage(msg) {
     return sendPositionHistory(chatId, positionId);
   }
   if (text.startsWith('/risk_status')) return sendRiskStatus(chatId);
+  if (text.startsWith('/status')) return sendStatus(chatId);
   if (text.startsWith('/setfilter')) {
     const { key, value } = parseSetFilter(text);
     const valid = new Set([
