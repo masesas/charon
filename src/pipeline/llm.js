@@ -3,6 +3,8 @@ import { ENABLE_LLM, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_TIMEOUT_MS } from
 import { now, stripThinking, strictJsonFromText } from '../utils.js';
 import { numSetting } from '../db/settings.js';
 import { db } from '../db/connection.js';
+import { computeSourceReliabilityScore } from '../db/sourcePerformance.js';
+import { recordHealthSuccess, recordHealthFailure } from '../health/providerHealth.js';
 
 export function normalizeDecision(parsed, fallbackReason = '') {
   const verdict = ['BUY', 'WATCH', 'PASS'].includes(String(parsed?.verdict).toUpperCase())
@@ -114,6 +116,7 @@ export async function decideCandidateBatch(rows, triggerCandidateId) {
     // Support both OpenAI-style (/v1/chat/completions) and 9router-style (/api/v1/chat/completions)
     const baseUrl = LLM_BASE_URL.replace(/\/$/, '');
     const endpoint = baseUrl.includes('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+    const start = now();
     const res = await axios.post(endpoint, {
       model: LLM_MODEL,
       temperature: 0.2,
@@ -131,6 +134,7 @@ export async function decideCandidateBatch(rows, triggerCandidateId) {
     const selectedId = Number(parsed.selected_candidate_id);
     const selectedMint = String(parsed.selected_mint || '');
     const row = rows.find(item => item.id === selectedId || item.candidate.token?.mint === selectedMint);
+    recordHealthSuccess('llm', 'chat_completion', now() - start);
     return {
       ...decision,
       selected_candidate_id: decision.verdict === 'BUY' && row ? row.id : null,
@@ -138,6 +142,7 @@ export async function decideCandidateBatch(rows, triggerCandidateId) {
       selected_row: decision.verdict === 'BUY' && row ? row : null,
     };
   } catch (err) {
+    recordHealthFailure('llm', 'chat_completion', err);
     console.log(`[llm] batch failed: ${err.message}`);
     return {
       verdict: 'WATCH',

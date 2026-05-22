@@ -398,3 +398,30 @@ async function sendRiskStatus(chatId) {
 
   await bot.sendMessage(chatId, lines.filter(Boolean).join('\n'), { parse_mode: 'HTML' });
 }
+
+async function sendSourceStats(chatId) {
+  const sources = getAllSourcePerformance();
+  if (sources.length === 0) {
+    return bot.sendMessage(chatId, '📊 <b>Signal Source Performance</b>\n\nNo data yet. Close some positions first.', { parse_mode: 'HTML' });
+  }
+
+  const lines = ['📊 <b>Signal Source Performance</b>', ''];
+
+  for (const source of sources) {
+    const reliability = computeSourceReliabilityScore(source.source, source.signal_type);
+    const winRate = source.win_rate_percent?.toFixed(1) || '0.0';
+    const avgPnl = source.avg_pnl_percent?.toFixed(1) || '0.0';
+    const avgTimeHours = source.avg_time_to_close_ms ? (source.avg_time_to_close_ms / 3600000).toFixed(1) : '—';
+    
+    lines.push(`<b>${escapeHtml(source.source)} / ${escapeHtml(source.signal_type)}</b>`);
+    lines.push(`Reliability: ${reliability}/100`);
+    lines.push(`Signals: ${source.total_signals} (${source.successful_signals}W / ${source.failed_signals}L)`);
+    lines.push(`Win Rate: ${winRate}%`);
+    lines.push(`Avg PnL: ${avgPnl}%`);
+    lines.push(`Avg Time: ${avgTimeHours}h`);
+    lines.push('');
+  }
+
+  await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' });
+}
+
