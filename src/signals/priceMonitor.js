@@ -2,6 +2,7 @@ import { db } from '../db/connection.js';
 import { now, json } from '../utils.js';
 import { fetchJupiterAsset } from '../enrichment/jupiter.js';
 import { firstPositiveNumber } from '../utils.js';
+import { fetchJupiterChartContext } from '../enrichment/jupiter.js';
 
 let candidateHandler = null;
 
@@ -115,4 +116,63 @@ export function cleanupAlerts() {
   const cutoff = now() - 7 * 24 * 60 * 60 * 1000; // 7 days
   const result = db.prepare("DELETE FROM price_alerts WHERE status IN ('triggered', 'expired') AND created_at_ms < ?").run(cutoff);
   if (result.changes > 0) console.log(`[dip] cleaned ${result.changes} old alerts`);
+}
+
+/**
+ * Background snapshot job for open positions
+ * Records price/mcap at regular intervals for analysis and near-miss detection
+ */
+export async function snapshotOpenPositions() {
+  const positions = db.prepare(
+    "SELECT id, mint FROM dry_run_positions WHERE status = 'open'"
+  ).all();
+
+  if (!positions.length) return { captured: 0, errors: 0 };
+
+  let captured = 0;
+  let errors = 0;
+
+  for (const pos of positions) {
+    try {
+      const asset = await fetchJupiterAsset(pos.mint);
+      const chart = await fetchJupiterChartContext(pos.mint);
+
+      const priceUsd = firstPositiveNumber(asset?.usdPrice);
+      const marketCapUsd = firstPositiveNumber(asset?.mcap, asset?.fdv);
+      const distanceFromAthPercent = chart?.distanceFromAthPercent ?? chart?.belowRangeHighPercent ?? null;
+
+      db.prepare(`
+        INSERT INTO position_price_snapshots (position_id, mint, snapshot_at_ms, price_usd, market_cap_usd, distance_from_ath_percent, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(pos.id, pos.mint, now(), priceUsd || null, marketCapUsd || null, distanceFromAthPercent, 'jupiter');
+
+      captured++;
+    } catch (err) {
+      errors++;
+      console.log(`[snapshot] position ${pos.id} error: ${err.message}`);
+    }
+  }
+
+  return { captured, errors };
+}
+
+/**
+ * Get snapshots for a position within a time range
+ */
+export function getPositionSnapshots(positionId, sinceMs = 0) {
+  return db.prepare(`
+    SELECT * FROM position_price_snapshots
+    WHERE position_id = ? AND snapshot_at_ms >= ?
+    ORDER BY snapshot_at_ms ASC
+  `).all(positionId, sinceMs);
+}
+
+/**
+ * Clean up old snapshots (older than 30 days)
+ */
+export function cleanupOldSnapshots() {
+  const cutoff = now() - 30 * 24 * 60 * 60 * 1000;
+  const result = db.prepare('DELETE FROM position_price_snapshots WHERE snapshot_at_ms < ?').run(cutoff);
+  if (result.changes > 0) console.log(`[snapshot] cleaned ${result.changes} old snapshots`);
+  return result.changes;
 }
