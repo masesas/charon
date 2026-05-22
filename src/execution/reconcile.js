@@ -112,7 +112,7 @@ export async function reconcileWallet() {
     }
   }
 
-  // Mark orphaned positions
+  // Mark orphaned positions and send alerts
   for (const orphan of orphanedTokens) {
     const position = openPositions.find(p => p.mint === orphan.mint);
     if (position) {
@@ -122,6 +122,16 @@ export async function reconcileWallet() {
         WHERE id = ?
       `).run(reconciliationAtMs, position.id);
     }
+  }
+
+  // Alert on orphaned tokens (tokens in wallet but no open position)
+  if (orphanedTokens.length > 0) {
+    const orphanList = orphanedTokens.map(t => `• ${t.mint.slice(0, 8)}... (${t.amount.toFixed(2)} tokens)`).join('\n');
+    const alert = `🔍 Orphaned Tokens Detected\n` +
+      `Found ${orphanedTokens.length} token(s) in wallet with no open position:\n` +
+      `${orphanList}\n` +
+      `These tokens may be from closed positions or external transfers.`;
+    await sendTelegram(alert).catch(err => console.log(`[reconcile] Failed to send orphan alert: ${err.message}`));
   }
 
   // Calculate totals
