@@ -219,6 +219,7 @@ export function initDb() {
   ensureColumn('dry_run_positions', 'near_miss_tp_at_ms', 'INTEGER');
   ensureColumn('dry_run_positions', 'near_miss_sl_percent', 'REAL');
   ensureColumn('dry_run_positions', 'near_miss_sl_at_ms', 'INTEGER');
+  ensureColumn('learning_lessons', 'applied_to_strategies', 'TEXT');
 
   // Provider health tracking table
   db.exec(`
@@ -255,6 +256,8 @@ export function initDb() {
       daily_loss_limit_triggered INTEGER NOT NULL DEFAULT 0,
       created_at_ms INTEGER NOT NULL,
       updated_at_ms INTEGER NOT NULL
+    )
+  `);
   db.exec(`
     CREATE TABLE IF NOT EXISTS position_price_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
