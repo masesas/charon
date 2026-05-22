@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { WSOL_MINT, JSON_HEADERS } from '../config.js';
 import { now } from '../utils.js';
+import { recordHealthSuccess, recordHealthFailure } from '../health/providerHealth.js';
 
 const jupiterAssetCache = new Map();
 let jupiterAssetBackoffUntil = 0;
@@ -59,6 +60,7 @@ async function fetchJupiterAsset(mint, { useCache = true, ttlMs = 20_000 } = {})
   const cached = jupiterAssetCache.get(mint);
   if (useCache && cached && now() - cached.at < ttlMs) return cached.data;
   if (jupiterAssetBackoffActive()) return cached?.data || null;
+  const start = now();
   try {
     const url = new URL('https://datapi.jup.ag/v1/assets/search');
     url.searchParams.set('query', mint);
@@ -69,8 +71,10 @@ async function fetchJupiterAsset(mint, { useCache = true, ttlMs = 20_000 } = {})
     const rows = Array.isArray(res.data) ? res.data : [];
     const data = rows.find(row => row?.id === mint) || rows[0] || null;
     jupiterAssetCache.set(mint, { at: now(), data });
+    recordHealthSuccess('jupiter', 'asset', now() - start);
     return data;
   } catch (err) {
+    recordHealthFailure('jupiter', 'asset', err);
     setJupiterAssetBackoff(err);
     if (err.response?.status !== 429) console.log(`[asset] ${mint.slice(0, 8)}... ${err.response?.status || ''} ${err.message}`);
     return cached?.data || null;
@@ -99,6 +103,7 @@ async function estimateTokenAmountFromSol(sizeSol, entryPrice) {
 }
 
 async function fetchJupiterHolders(mint) {
+  const start = now();
   try {
     const res = await axios.get(`https://datapi.jup.ag/v1/holders/${mint}`, {
       timeout: 10_000,
@@ -117,6 +122,7 @@ async function fetchJupiterHolders(mint) {
       };
     });
     const top20 = mapped.slice(0, 20);
+    recordHealthSuccess('jupiter', 'holders', now() - start);
     return {
       count: holders.length,
       holders: mapped,
@@ -125,6 +131,7 @@ async function fetchJupiterHolders(mint) {
       maxHolderPercent: Math.max(0, ...top20.map(holder => Number(holder.percent || 0))),
     };
   } catch (err) {
+    recordHealthFailure('jupiter', 'holders', err);
     console.log(`[holders] ${mint.slice(0, 8)}... ${err.response?.status || ''} ${err.message}`);
     return { count: 0, holders: [], top20: [], top20Percent: null, maxHolderPercent: null };
   }
@@ -176,6 +183,7 @@ async function fetchJupiterChartContext(mint) {
     ['1_HOUR', 168, 'swing_7d_1h'],
     ['4_HOUR', 180, 'long_30d_4h'],
   ];
+  const start = now();
   const results = await Promise.all(windows.map(([interval, candles, label]) => (
     fetchJupiterChartWindow(mint, interval, candles, label).catch((err) => {
       console.log(`[chart] ${mint.slice(0, 8)}... ${interval} ${err.message}`);
@@ -183,6 +191,11 @@ async function fetchJupiterChartContext(mint) {
     })
   )));
   const available = results.filter(row => row.available);
+  if (available.length > 0) {
+    recordHealthSuccess('jupiter', 'chart', now() - start);
+  } else {
+    recordHealthFailure('jupiter', 'chart', 'All chart windows unavailable');
+  }
   const currentNative = available[0]?.current ?? null;
   const rangeHigh = available.length ? Math.max(...available.map(row => Number(row.high || 0))) : null;
   const topBlastRisk = Number.isFinite(Number(currentNative)) && Number.isFinite(Number(rangeHigh)) && rangeHigh > 0
@@ -207,6 +220,7 @@ const IGNORED_PNL_MINTS = new Set([
 ]);
 
 async function fetchJupiterWalletPnl(walletAddress) {
+  const start = now();
   try {
     const url = new URL('https://datapi.jup.ag/v1/pnl');
     url.searchParams.set('addresses', walletAddress);
@@ -214,8 +228,10 @@ async function fetchJupiterWalletPnl(walletAddress) {
     const res = await axios.get(url.toString(), { timeout: 10_000, headers: JSON_HEADERS });
     const data = res.data?.[walletAddress] || {};
     for (const mint of IGNORED_PNL_MINTS) delete data[mint];
+    recordHealthSuccess('jupiter', 'pnl', now() - start);
     return data;
   } catch (err) {
+    recordHealthFailure('jupiter', 'pnl', err);
     console.log(`[pnl] ${err.response?.status || ''} ${err.message}`);
     return {};
   }
