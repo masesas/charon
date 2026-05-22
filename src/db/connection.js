@@ -219,7 +219,8 @@ export function initDb() {
   ensureColumn('dry_run_positions', 'near_miss_tp_at_ms', 'INTEGER');
   ensureColumn('dry_run_positions', 'near_miss_sl_percent', 'REAL');
   ensureColumn('dry_run_positions', 'near_miss_sl_at_ms', 'INTEGER');
-  ensureColumn('learning_lessons', 'applied_to_strategies', 'TEXT');
+  ensureColumn('dry_run_positions', 'near_miss_sl_at_ms', 'INTEGER');
+  ensureColumn('candidates', 'signal_age_ms', 'INTEGER');
 
   // Provider health tracking table
   db.exec(`
@@ -474,6 +475,9 @@ export function initDb() {
     use_llm: false,
     llm_min_confidence: 0,
   }), ts);
+
+  // Initialize config_changes table
+  initConfigChanges();
 }
 
 export function ensureColumn(table, column, ddl) {

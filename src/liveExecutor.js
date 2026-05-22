@@ -9,6 +9,8 @@ import {
   SOLANA_PRIVATE_KEY,
   SOLANA_RPC_URL,
 } from './config.js';
+import { recordHealthSuccess, recordHealthFailure } from './health/providerHealth.js';
+import { now } from './utils.js';
 
 let liveWallet = null;
 let solanaConnection = null;
@@ -39,14 +41,17 @@ export function liveWalletPubkey() {
 
 export async function fetchLiveTokenBalance(mint) {
   if (!liveWallet || !solanaConnection) return null;
+  const start = now();
   try {
     const accounts = await solanaConnection.getParsedTokenAccountsByOwner(
       liveWallet.publicKey,
       { mint: new PublicKey(mint) },
       'confirmed',
     );
+    recordHealthSuccess('rpc', 'getParsedTokenAccountsByOwner', now() - start);
     return accounts.value[0]?.account?.data?.parsed?.info?.tokenAmount?.amount || null;
   } catch (err) {
+    recordHealthFailure('rpc', 'getParsedTokenAccountsByOwner', err);
     console.log(`[live] token balance ${mint.slice(0, 8)}... ${err.message}`);
     return null;
   }
@@ -59,7 +64,15 @@ export function requireLiveExecution() {
 
 export async function liveWalletBalanceLamports() {
   requireLiveExecution();
-  return solanaConnection.getBalance(liveWallet.publicKey, 'confirmed');
+  const start = now();
+  try {
+    const balance = await solanaConnection.getBalance(liveWallet.publicKey, 'confirmed');
+    recordHealthSuccess('rpc', 'getBalance', now() - start);
+    return balance;
+  } catch (err) {
+    recordHealthFailure('rpc', 'getBalance', err);
+    throw err;
+  }
 }
 
 async function jupiterOrder({ inputMint, outputMint, amount }) {
@@ -104,23 +117,30 @@ async function jupiterExecute(order, signedTransaction) {
 }
 
 export async function executeJupiterSwap({ inputMint, outputMint, amount }) {
-  const order = await jupiterOrder({ inputMint, outputMint, amount });
-  const transaction = orderTransactionBase64(order);
-  if (!transaction) throw new Error('Jupiter order did not include a transaction.');
-  const signedTransaction = signTransactionBase64(transaction);
-  const executed = await jupiterExecute(order, signedTransaction);
-  if (executed?.status && executed.status !== 'Success') {
-    throw new Error(`Jupiter execute failed: ${executed.error || executed.code || executed.status}`);
+  const start = now();
+  try {
+    const order = await jupiterOrder({ inputMint, outputMint, amount });
+    const transaction = orderTransactionBase64(order);
+    if (!transaction) throw new Error('Jupiter order did not include a transaction.');
+    const signedTransaction = signTransactionBase64(transaction);
+    const executed = await jupiterExecute(order, signedTransaction);
+    if (executed?.status && executed.status !== 'Success') {
+      throw new Error(`Jupiter execute failed: ${executed.error || executed.code || executed.status}`);
+    }
+    const signature = executed?.signature || executed?.txid || executed?.transactionId || null;
+    if (!signature) {
+      throw new Error(`Jupiter execute returned no signature (status: ${executed?.status || 'unknown'})`);
+    }
+    recordHealthSuccess('rpc', 'swap', now() - start);
+    return {
+      order,
+      executed,
+      signature,
+      inputAmount: String(amount),
+      outputAmount: String(executed?.outputAmountResult || executed?.totalOutputAmount || order?.outAmount || ''),
+    };
+  } catch (err) {
+    recordHealthFailure('rpc', 'swap', err);
+    throw err;
   }
-  const signature = executed?.signature || executed?.txid || executed?.transactionId || null;
-  if (!signature) {
-    throw new Error(`Jupiter execute returned no signature (status: ${executed?.status || 'unknown'})`);
-  }
-  return {
-    order,
-    executed,
-    signature,
-    inputAmount: String(amount),
-    outputAmount: String(executed?.outputAmountResult || executed?.totalOutputAmount || order?.outAmount || ''),
-  };
 }
