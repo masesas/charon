@@ -3,17 +3,28 @@ import { now } from '../utils.js';
 
 const PROVIDER_NAMES = ['gmgn', 'jupiter', 'rpc', 'signal_server', 'telegram', 'llm'];
 
+// Dedup window: don't re-alert for same provider within this time (30 minutes)
+const ALERT_DEDUP_MS = 30 * 60 * 1000;
+
+// Alert callback — set by app.js to avoid circular dependency with telegram/send.js
+let degradedAlertCallback = null;
+
+export function setDegradedAlertCallback(fn) {
+  degradedAlertCallback = fn;
+}
+
 export function recordHealthSuccess(provider, endpoint, latencyMs) {
   const ts = now();
   const stmt = db.prepare(`
-    INSERT INTO provider_health (provider, endpoint, status, success_count, last_success_at_ms, avg_latency_ms, updated_at_ms)
-    VALUES (?, ?, 'healthy', 1, ?, ?, ?)
+    INSERT INTO provider_health (provider, endpoint, status, success_count, last_success_at_ms, avg_latency_ms, updated_at_ms, alerted_at_ms)
+    VALUES (?, ?, 'healthy', 1, ?, ?, ?, NULL)
     ON CONFLICT(provider, endpoint) DO UPDATE SET
       status = 'healthy',
       success_count = success_count + 1,
       last_success_at_ms = ?,
       avg_latency_ms = CASE WHEN avg_latency_ms IS NULL THEN ? ELSE (avg_latency_ms * 0.8 + ? * 0.2) END,
-      updated_at_ms = ?
+      updated_at_ms = ?,
+      alerted_at_ms = NULL
   `);
   stmt.run(provider, endpoint || '', ts, latencyMs, ts, ts, latencyMs, latencyMs, ts);
 }
@@ -21,6 +32,11 @@ export function recordHealthSuccess(provider, endpoint, latencyMs) {
 export function recordHealthFailure(provider, endpoint, error) {
   const ts = now();
   const errorMsg = String(error?.message || error || 'Unknown error').slice(0, 500);
+  
+  // Get current status before update
+  const current = db.prepare('SELECT status, alerted_at_ms FROM provider_health WHERE provider = ? AND endpoint = ?').get(provider, endpoint || '');
+  const wasHealthy = !current || current.status === 'healthy';
+  
   const stmt = db.prepare(`
     INSERT INTO provider_health (provider, endpoint, status, failure_count, last_failure_at_ms, last_error, updated_at_ms)
     VALUES (?, ?, 'degraded', 1, ?, ?, ?)
@@ -32,6 +48,21 @@ export function recordHealthFailure(provider, endpoint, error) {
       updated_at_ms = ?
   `);
   stmt.run(provider, endpoint || '', ts, errorMsg, ts, ts, errorMsg, ts);
+  
+  // If transitioned from healthy to degraded, send alert (unless already alerted recently)
+  if (wasHealthy && degradedAlertCallback && provider !== 'telegram') {
+    const shouldAlert = !current || !current.alerted_at_ms || (ts - current.alerted_at_ms) > ALERT_DEDUP_MS;
+    if (shouldAlert) {
+      // Mark as alerted
+      db.prepare('UPDATE provider_health SET alerted_at_ms = ? WHERE provider = ? AND endpoint = ?')
+        .run(ts, provider, endpoint || '');
+      
+      // Send alert asynchronously to avoid blocking
+      degradedAlertCallback(provider, endpoint || '(default)', errorMsg).catch(err => {
+        console.log(`[health] Failed to send degraded alert for ${provider}: ${err.message}`);
+      });
+    }
+  }
 }
 
 export function getProviderHealth(provider) {

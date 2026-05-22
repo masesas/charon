@@ -249,6 +249,9 @@ export function initDb() {
   `);
   db.exec('CREATE INDEX IF NOT EXISTS idx_provider_health_provider ON provider_health(provider)');
 
+  // Add alerted_at_ms column for tracking when degraded alerts were sent
+  ensureColumn('provider_health', 'alerted_at_ms', 'INTEGER');
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS daily_risk_metrics (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

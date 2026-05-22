@@ -9,9 +9,22 @@ import { processCandidateFromSignals, maybeProcessDegenCandidate } from './pipel
 import { sendTelegram } from './telegram/send.js';
 import { makeFailureTracker } from './utils.js';
 import { checkPendingReviews } from './learning/feedback.js';
+import { setDegradedAlertCallback } from './health/providerHealth.js';
 
 setDefaultResultOrder('ipv4first');
 validateConfig();
+
+// Set up degraded provider alerting
+setDegradedAlertCallback(async (provider, endpoint, error) => {
+  const msg = [
+    '⚠️ <b>Provider Degraded</b>',
+    '',
+    `Provider: <b>${provider}</b>`,
+    `Endpoint: ${endpoint}`,
+    `Error: ${error.slice(0, 200)}`,
+  ].join('\n');
+  await sendTelegram(msg);
+});
 
 export async function startCharon() {
   initDb();
