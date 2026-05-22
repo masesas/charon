@@ -430,3 +430,49 @@ async function sendSourceStats(chatId) {
   await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' });
 }
 
+async function sendReconcile(chatId) {
+  await bot.sendMessage(chatId, '🔄 Running wallet reconciliation...');
+  const result = await reconcileWallet();
+  if (!result) {
+    return bot.sendMessage(chatId, '❌ Reconciliation failed. No live wallet configured or error occurred.');
+  }
+
+  const lines = [
+    '🔄 <b>Wallet Reconciliation</b>',
+    `Wallet: ${result.wallet_address.slice(0, 8)}...${result.wallet_address.slice(-4)}`,
+    '',
+    '<b>Summary</b>',
+    `Positions: ${result.positions_count}`,
+    `Orphaned Tokens: ${result.orphaned_tokens_count}`,
+    `Mismatches: ${result.mismatches_count}`,
+    '',
+    `<b>Balance</b>`,
+    `Total SOL: ${result.total_balance_sol.toFixed(4)}`,
+    `Total USD: $${result.total_balance_usd.toFixed(2)}`,
+  ];
+
+  if (result.orphaned_tokens.length > 0) {
+    lines.push('');
+    lines.push('<b>Orphaned Tokens:</b>');
+    for (const t of result.orphaned_tokens.slice(0, 5)) {
+      lines.push(`• ${t.mint.slice(0, 8)}... (${t.amount.toFixed(2)} tokens)`);
+    }
+    if (result.orphaned_tokens.length > 5) {
+      lines.push(`... and ${result.orphaned_tokens.length - 5} more`);
+    }
+  }
+
+  if (result.mismatches.length > 0) {
+    lines.push('');
+    lines.push('<b>Balance Mismatches:</b>');
+    for (const m of result.mismatches.slice(0, 5)) {
+      lines.push(`• Position #${m.position_id}: expected ${m.expected_tokens.toFixed(2)}, actual ${m.actual_tokens.toFixed(2)}`);
+    }
+    if (result.mismatches.length > 5) {
+      lines.push(`... and ${result.mismatches.length - 5} more`);
+    }
+  }
+
+  await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' });
+}
+
