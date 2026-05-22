@@ -215,6 +215,20 @@ export function initDb() {
   ensureColumn('decision_logs', 'strategy_version_hash', 'TEXT');
   ensureColumn('strategies', 'strategy_hash', 'TEXT');
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS position_price_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      position_id INTEGER NOT NULL,
+      mint TEXT NOT NULL,
+      snapshot_at_ms INTEGER NOT NULL,
+      price_usd REAL,
+      market_cap_usd REAL,
+      distance_from_ath_percent REAL,
+      source TEXT
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_position_snapshots_position ON position_price_snapshots(position_id, snapshot_at_ms)');
+
   const defaults = {
     agent_enabled: 'true',
     trading_mode: process.env.TRADING_MODE || 'dry_run',
