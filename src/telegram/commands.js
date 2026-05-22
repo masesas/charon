@@ -28,6 +28,7 @@ import { executeLiveSell } from '../execution/router.js';
 import { handleCallback, editMenuMessage } from './callbacks.js';
 import { consumeNumericFilterInput } from './input.js';
 import { runLearning, sendLessons } from '../learning/commands.js';
+import { applyLesson, lessonResults } from '../learning/feedback.js';
 import { updateDailyMetricsOnClose, markDailyLossLimitTriggered, getRiskStatus } from '../execution/riskManager.js';
 import { fetchWalletPnl } from '../enrichment/wallets.js';
 
@@ -82,6 +83,8 @@ export async function handleMessage(msg) {
     return runLearning(chatId, windowArg);
   }
   if (text.startsWith('/lessons')) return sendLessons(chatId);
+  if (text.startsWith('/apply_lesson')) return applyLesson(chatId, text);
+  if (text.startsWith('/lesson_results')) return lessonResults(chatId, text);
   if (text.startsWith('/candidate')) {
     const mint = text.split(/\s+/)[1];
     if (!mint) return bot.sendMessage(chatId, 'Usage: /candidate <mint>');
@@ -257,6 +260,8 @@ export function setupTelegram() {
     { command: 'pnl', description: 'Show saved-wallet PnL' },
     { command: 'learn', description: 'Run manual learning report' },
     { command: 'lessons', description: 'Show active screening lessons' },
+    { command: 'apply_lesson', description: 'Apply lesson to strategy config' },
+    { command: 'lesson_results', description: 'Show lesson application results' },
     { command: 'setfilter', description: 'Set a filter value' },
     { command: 'walletadd', description: 'Save wallet for exposure/PnL' },
     { command: 'walletremove', description: 'Remove saved wallet' },

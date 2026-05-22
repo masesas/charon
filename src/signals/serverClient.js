@@ -4,6 +4,7 @@ import { now } from '../utils.js';
 import { activeStrategy } from '../db/settings.js';
 import { storeSignalEvent, trendingSignalPass, trending } from './trending.js';
 import { graduated } from './graduated.js';
+import { recordHealthSuccess, recordHealthFailure } from '../health/providerHealth.js';
 
 let candidateHandler = null;
 let degenHandler = null;
@@ -31,6 +32,7 @@ async function triggerCandidate({ mint, fee, signature, graduatedCoin, trendingT
 }
 
 export async function fetchServerSignals() {
+  const start = now();
   try {
     const url = new URL('/api/signals', SIGNAL_SERVER_URL);
     url.searchParams.set('limit', '100');
@@ -41,6 +43,7 @@ export async function fetchServerSignals() {
       headers: SIGNAL_SERVER_KEY ? { 'x-api-key': SIGNAL_SERVER_KEY } : {},
     });
     const signals = res.data?.signals || [];
+    recordHealthSuccess('signal_server', 'signals', now() - start);
 
     prune(seenSignals, 10 * 60_000);
 
@@ -174,6 +177,7 @@ export async function fetchServerSignals() {
     const dipPart = dipAlerts > 0 ? `, ${dipAlerts} dip alerts` : '';
     console.log(`[server] ${processed} signals, ${triggered} triggered${dipPart}, tracking ${trending.size}`);
   } catch (err) {
+    recordHealthFailure('signal_server', 'signals', err);
     console.log(`[server] ${err.message}`);
   }
 }

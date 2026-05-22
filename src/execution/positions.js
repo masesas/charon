@@ -13,6 +13,7 @@ import { trending } from '../signals/trending.js';
 import { executeLiveSell } from './router.js';
 import { sendPositionExit } from '../telegram/send.js';
 import { updateDailyMetricsOnClose, markDailyLossLimitTriggered, isDailyLossLimitExceeded } from './riskManager.js';
+import { updateSourcePerformanceOnClose } from '../db/sourcePerformance.js';
 
 export async function freshEntryMarket(mint, candidate) {
   const gmgn = await fetchGmgnTokenInfo(mint, false);
