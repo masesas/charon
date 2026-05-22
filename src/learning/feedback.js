@@ -88,6 +88,9 @@ export async function applyLesson(chatId, text) {
       .run(json(existingApplied), lessonId);
   }
 
+  // Schedule 7-day performance review
+  scheduleLessonReview(lessonId, strategyId);
+
   return bot.sendMessage(chatId, [
     '✅ <b>Lesson Applied</b>',
     '',

@@ -7,14 +7,23 @@ import { numSetting } from '../db/settings.js';
 import { candidateSummary, compactCandidateLine, batchRevealSummary, formatPosition } from './format.js';
 import { candidateButtons, batchRevealButtons, positionButtons, intentButtons } from './menus.js';
 import { batchById } from '../db/decisions.js';
+import { recordHealthSuccess, recordHealthFailure } from '../health/providerHealth.js';
 
 export async function sendTelegram(text, extra = {}) {
-  return bot.sendMessage(TELEGRAM_CHAT_ID, text, {
-    parse_mode: 'HTML',
-    disable_web_page_preview: true,
-    ...(TELEGRAM_TOPIC_ID ? { message_thread_id: Number(TELEGRAM_TOPIC_ID) } : {}),
-    ...extra,
-  });
+  const start = now();
+  try {
+    const result = await bot.sendMessage(TELEGRAM_CHAT_ID, text, {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      ...(TELEGRAM_TOPIC_ID ? { message_thread_id: Number(TELEGRAM_TOPIC_ID) } : {}),
+      ...extra,
+    });
+    recordHealthSuccess('telegram', 'sendMessage', now() - start);
+    return result;
+  } catch (err) {
+    recordHealthFailure('telegram', 'sendMessage', err);
+    throw err;
+  }
 }
 
 export async function sendCandidateAlert(candidateId, candidate, decision) {

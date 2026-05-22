@@ -208,6 +208,10 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
     // Track daily risk metrics
     updateDailyMetricsOnClose({ pnl_sol: finalPnlSol, pnl_percent: finalPnlPercent });
     if (isDailyLossLimitExceeded()) markDailyLossLimitTriggered();
+    // Track source performance (Epic 6)
+    const closedPosition = { ...position, closed_at_ms: now(), pnl_percent: finalPnlPercent, pnl_sol: finalPnlSol };
+    const candidate = position.snapshot_json ? JSON.parse(position.snapshot_json).candidate : null;
+    if (candidate) updateSourcePerformanceOnClose(closedPosition, candidate);
     closed = true;
   } else if (exitReason && autoExit) {
     db.prepare(`
@@ -222,6 +226,10 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
     // Track daily risk metrics
     updateDailyMetricsOnClose({ pnl_sol: pnlSol, pnl_percent: pnlPercent });
     if (isDailyLossLimitExceeded()) markDailyLossLimitTriggered();
+    // Track source performance (Epic 6)
+    const closedPosition = { ...position, closed_at_ms: now(), pnl_percent: pnlPercent, pnl_sol: pnlSol };
+    const candidate = position.snapshot_json ? JSON.parse(position.snapshot_json).candidate : null;
+    if (candidate) updateSourcePerformanceOnClose(closedPosition, candidate);
     closed = true;
   }
   return {
