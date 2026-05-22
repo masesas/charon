@@ -25,6 +25,7 @@ import { sendTelegram, sendBatch, sendPositionOpen } from './send.js';
 import { candidateSummary, formatPosition } from './format.js';
 import { refreshPosition } from '../execution/positions.js';
 import { executeLiveSell } from '../execution/router.js';
+import { reconcileWallet } from '../execution/reconcile.js';
 import { handleCallback, editMenuMessage } from './callbacks.js';
 import { consumeNumericFilterInput } from './input.js';
 import { runLearning, sendLessons } from '../learning/commands.js';
@@ -118,6 +119,7 @@ export async function handleMessage(msg) {
   }
   if (text.startsWith('/risk_status')) return sendRiskStatus(chatId);
   if (text.startsWith('/status')) return sendStatus(chatId);
+  if (text.startsWith('/reconcile')) return sendReconcile(chatId);
   if (text.startsWith('/setfilter')) {
     const { key, value } = parseSetFilter(text);
     const valid = new Set([
@@ -262,6 +264,7 @@ export function setupTelegram() {
     { command: 'candidate', description: 'Show candidate by mint' },
     { command: 'filters', description: 'Show filters' },
     { command: 'pnl', description: 'Show saved-wallet PnL' },
+    { command: 'status', description: 'Show provider health status' },
     { command: 'learn', description: 'Run manual learning report' },
     { command: 'lessons', description: 'Show active screening lessons' },
     { command: 'apply_lesson', description: 'Apply lesson to strategy config' },
