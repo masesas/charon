@@ -220,6 +220,25 @@ export function initDb() {
   ensureColumn('dry_run_positions', 'near_miss_sl_percent', 'REAL');
   ensureColumn('dry_run_positions', 'near_miss_sl_at_ms', 'INTEGER');
 
+  // Provider health tracking table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS provider_health (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL,
+      endpoint TEXT,
+      status TEXT NOT NULL DEFAULT 'healthy',
+      success_count INTEGER NOT NULL DEFAULT 0,
+      failure_count INTEGER NOT NULL DEFAULT 0,
+      last_success_at_ms INTEGER,
+      last_failure_at_ms INTEGER,
+      last_error TEXT,
+      avg_latency_ms REAL,
+      updated_at_ms INTEGER NOT NULL,
+      UNIQUE(provider, endpoint)
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_provider_health_provider ON provider_health(provider)');
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS daily_risk_metrics (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
