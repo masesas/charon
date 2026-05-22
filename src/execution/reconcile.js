@@ -2,6 +2,7 @@ import { db } from '../db/connection.js';
 import { now, json } from '../utils.js';
 import { liveWalletPubkey } from '../liveExecutor.js';
 import { fetchJupiterAsset } from '../enrichment/jupiter.js';
+import { sendTelegram } from '../telegram/send.js';
 import { Connection, PublicKey } from '@solana/web3.js';
 
 const RPC_ENDPOINT = process.env.SOLANA_RPC_ENDPOINT || 'https://api.mainnet-beta.solana.com';
@@ -75,6 +76,19 @@ export async function reconcileWallet() {
         SET balance_mismatch_sol = ?, last_reconciled_at_ms = ?
         WHERE id = ?
       `).run(mismatchSol, reconciliationAtMs, position.id);
+
+      // Alert on significant mismatch (>10% difference)
+      const mismatchPercent = (mismatchTokens / (expectedTokens || 1)) * 100;
+      if (mismatchPercent > 10) {
+        const alert = `⚠️ Balance Mismatch Detected\n` +
+          `Position ID: ${position.id}\n` +
+          `Mint: ${position.mint}\n` +
+          `Expected: ${expectedTokens.toFixed(2)} tokens\n` +
+          `Actual: ${actualTokens.toFixed(2)} tokens\n` +
+          `Difference: ${mismatchPercent.toFixed(1)}%\n` +
+          `Est. Loss: ${mismatchSol.toFixed(4)} SOL`;
+        await sendTelegram(alert).catch(err => console.log(`[reconcile] Failed to send mismatch alert: ${err.message}`));
+      }
     } else {
       // No mismatch, update reconciliation timestamp
       db.prepare(`
