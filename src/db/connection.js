@@ -219,7 +219,14 @@ export function initDb() {
   ensureColumn('dry_run_positions', 'near_miss_tp_at_ms', 'INTEGER');
   ensureColumn('dry_run_positions', 'near_miss_sl_percent', 'REAL');
   ensureColumn('dry_run_positions', 'near_miss_sl_at_ms', 'INTEGER');
-  ensureColumn('dry_run_positions', 'near_miss_sl_at_ms', 'INTEGER');
+
+  // Reconciliation columns (Epic 5)
+  ensureColumn('dry_run_positions', 'last_reconciled_at_ms', 'INTEGER');
+  ensureColumn('dry_run_positions', 'reconciled_balance_sol', 'REAL');
+  ensureColumn('dry_run_positions', 'reconciled_balance_usd', 'REAL');
+  ensureColumn('dry_run_positions', 'balance_mismatch_sol', 'REAL');
+  ensureColumn('dry_run_positions', 'is_orphaned', 'INTEGER DEFAULT 0');
+
   ensureColumn('candidates', 'signal_age_ms', 'INTEGER');
 
   // Provider health tracking table
@@ -478,6 +485,21 @@ export function initDb() {
 
   // Initialize config_changes table
   initConfigChanges();
+
+  // Lesson performance reviews table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS lesson_performance_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      lesson_id INTEGER NOT NULL,
+      strategy_id TEXT NOT NULL,
+      scheduled_at_ms INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      completed_at_ms INTEGER,
+      result_json TEXT,
+      created_at_ms INTEGER NOT NULL
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_lesson_reviews_status ON lesson_performance_reviews(status, scheduled_at_ms)');
 }
 
 export function ensureColumn(table, column, ddl) {
