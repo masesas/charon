@@ -31,6 +31,7 @@ import { runLearning, sendLessons } from '../learning/commands.js';
 import { applyLesson, lessonResults } from '../learning/feedback.js';
 import { updateDailyMetricsOnClose, markDailyLossLimitTriggered, getRiskStatus } from '../execution/riskManager.js';
 import { fetchWalletPnl } from '../enrichment/wallets.js';
+import { getAllSourcePerformance, computeSourceReliabilityScore } from '../db/sourcePerformance.js';
 
 export async function handleMessage(msg) {
   const text = (msg.text || '').trim();
@@ -78,6 +79,7 @@ export async function handleMessage(msg) {
     return bot.sendMessage(chatId, `Updated ${id}.${key} = ${value}\n\n${strategyMenuText()}`, { parse_mode: 'HTML' });
   }
   if (text.startsWith('/pnl')) return sendPnl(chatId);
+  if (text.startsWith('/source_stats')) return sendSourceStats(chatId);
   if (text.startsWith('/learn')) {
     const windowArg = text.split(/\s+/)[1] || '12h';
     return runLearning(chatId, windowArg);

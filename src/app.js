@@ -4,6 +4,7 @@ import { initDb } from './db/connection.js';
 import { initLiveExecution } from './liveExecutor.js';
 import { setupTelegram } from './telegram/commands.js';
 import { monitorPositions } from './execution/positions.js';
+import { reconcileWallet } from './execution/reconcile.js';
 import { processCandidateFromSignals, maybeProcessDegenCandidate } from './pipeline/orchestrator.js';
 import { sendTelegram } from './telegram/send.js';
 import { makeFailureTracker } from './utils.js';
@@ -61,6 +62,11 @@ export async function startCharon() {
   // Position monitoring runs in both modes
   const trackPositions = makeFailureTracker('position monitor', (msg) => sendTelegram(msg));
   setInterval(() => trackPositions(() => monitorPositions()), POSITION_CHECK_MS);
+
+  // Wallet reconciliation (Epic 5) - run on startup and every 5 minutes
+  const trackReconciliation = makeFailureTracker('wallet reconciliation', (msg) => sendTelegram(msg));
+  reconcileWallet().catch(err => console.log(`[reconcile] startup reconciliation failed: ${err.message}`));
+  setInterval(() => trackReconciliation(() => reconcileWallet()), 5 * 60 * 1000);
 
   // Lesson performance review check every 6 hours
   setInterval(() => checkPendingReviews(TELEGRAM_CHAT_ID).catch(err => console.log(`[lesson-review] ${err.message}`)), 6 * 60 * 60 * 1000);
