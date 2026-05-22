@@ -77,17 +77,30 @@ export async function reconcileWallet() {
         WHERE id = ?
       `).run(mismatchSol, reconciliationAtMs, position.id);
 
-      // Alert on significant mismatch (>10% difference)
-      const mismatchPercent = (mismatchTokens / (expectedTokens || 1)) * 100;
-      if (mismatchPercent > 10) {
-        const alert = `⚠️ Balance Mismatch Detected\n` +
+      // Alert on zero balance (critical - position exists but wallet has nothing)
+      if (actualTokens === 0 && expectedTokens > 0) {
+        const alert = `🚨 ZERO BALANCE ALERT\n` +
           `Position ID: ${position.id}\n` +
           `Mint: ${position.mint}\n` +
           `Expected: ${expectedTokens.toFixed(2)} tokens\n` +
-          `Actual: ${actualTokens.toFixed(2)} tokens\n` +
-          `Difference: ${mismatchPercent.toFixed(1)}%\n` +
-          `Est. Loss: ${mismatchSol.toFixed(4)} SOL`;
-        await sendTelegram(alert).catch(err => console.log(`[reconcile] Failed to send mismatch alert: ${err.message}`));
+          `Actual: 0 tokens\n` +
+          `Position Size: ${position.size_sol} SOL\n` +
+          `⚠️ Position marked as open but wallet has no tokens!`;
+        await sendTelegram(alert).catch(err => console.log(`[reconcile] Failed to send zero-balance alert: ${err.message}`));
+      }
+      // Alert on significant mismatch (>10% difference)
+      else {
+        const mismatchPercent = (mismatchTokens / (expectedTokens || 1)) * 100;
+        if (mismatchPercent > 10) {
+          const alert = `⚠️ Balance Mismatch Detected\n` +
+            `Position ID: ${position.id}\n` +
+            `Mint: ${position.mint}\n` +
+            `Expected: ${expectedTokens.toFixed(2)} tokens\n` +
+            `Actual: ${actualTokens.toFixed(2)} tokens\n` +
+            `Difference: ${mismatchPercent.toFixed(1)}%\n` +
+            `Est. Loss: ${mismatchSol.toFixed(4)} SOL`;
+          await sendTelegram(alert).catch(err => console.log(`[reconcile] Failed to send mismatch alert: ${err.message}`));
+        }
       }
     } else {
       // No mismatch, update reconciliation timestamp
