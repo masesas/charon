@@ -213,6 +213,7 @@ export function initDb() {
   ensureColumn('dry_run_positions', 'strategy_version_hash', 'TEXT');
   ensureColumn('decision_logs', 'strategy_id', 'TEXT');
   ensureColumn('decision_logs', 'strategy_version_hash', 'TEXT');
+  ensureColumn('strategies', 'strategy_hash', 'TEXT');
 
   const defaults = {
     agent_enabled: 'true',

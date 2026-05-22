@@ -1,4 +1,5 @@
 import { db } from './connection.js';
+import { createHash } from 'crypto';
 
 export function setting(key, fallback = '') {
   return db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value ?? fallback;
@@ -60,8 +61,14 @@ export function setActiveStrategy(id) {
   strategyCache.at = 0;
 }
 
+export function computeStrategyHash(config) {
+  const sorted = JSON.stringify(config, Object.keys(config).sort());
+  return createHash('sha256').update(sorted).digest('hex').slice(0, 12);
+}
+
 export function updateStrategyConfig(id, config) {
-  db.prepare('UPDATE strategies SET config_json = ? WHERE id = ?').run(JSON.stringify(config), id);
+  const hash = computeStrategyHash(config);
+  db.prepare('UPDATE strategies SET config_json = ?, strategy_hash = ? WHERE id = ?').run(JSON.stringify(config), hash, id);
   if (strategyCache.id === id) {
     strategyCache.config = null;
     strategyCache.at = 0;
