@@ -5,11 +5,12 @@ import { WSOL_MINT, LIVE_MIN_SOL_RESERVE_LAMPORTS } from '../config.js';
 import { escapeHtml, fmtSol } from '../format.js';
 import { executeJupiterSwap, liveWalletBalanceLamports, fetchLiveTokenBalance } from '../liveExecutor.js';
 import { activeStrategy } from '../db/settings.js';
-import { createLivePosition, canOpenMorePositions, openPositionCount } from '../db/positions.js';
+import { createLivePosition, canOpenMorePositions, openPositionCount, tierOpenCount, hasOpenPositionForMint } from '../db/positions.js';
 import { intentById } from '../db/intents.js';
 import { logDecisionEvent } from '../db/decisions.js';
 import { refreshCandidateForExecution } from './positions.js';
 import { enforceEntryGuards } from './entryGuards.js';
+import { resolveTierProfile, getTierProfile } from './tiers.js';
 import { bot } from '../telegram/bot.js';
 import { candidateSummary } from '../telegram/format.js';
 import { sendPositionOpen, sendTelegram } from '../telegram/send.js';
@@ -18,10 +19,28 @@ import { createTradeIntent } from '../db/intents.js';
 
 export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], triggerCandidateId = null) {
   const strat = activeStrategy();
-  const amountLamports = Math.floor((strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1)) * 1_000_000_000);
+  // Resolve tier (defensive — covers manual live buy with an unrefreshed candidate).
+  const { tier, profile } = resolveTierProfile(selectedRow.candidate);
+  const sizeSol = profile.position_size_sol ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
+  const amountLamports = Math.floor(sizeSol * 1_000_000_000);
+  // Duplicate-mint guard BEFORE the swap: an open position already manages this
+  // mint, so a second swap would orphan tokens (createLivePosition would return
+  // the existing id, masking the new buy).
+  if (hasOpenPositionForMint(selectedRow.candidate.token.mint)) {
+    throw new Error(`Already holding an open position for ${selectedRow.candidate.token.mint.slice(0, 8)}...; skipping live buy.`);
+  }
+  // Per-tier slot cap BEFORE the swap (a real swap must not happen if the tier is
+  // full — that would orphan tokens with no position to manage them).
+  if (profile.max_open_positions > 0 && tierOpenCount(tier) >= profile.max_open_positions) {
+    logDecisionEvent({
+      batchId, triggerCandidateId, selectedRow, rows, decision, mode: 'live',
+      action: 'entry_skipped_max_positions_tier', guardrails: { tier },
+    });
+    throw new Error(`Tier ${tier} is full (${profile.max_open_positions} open). Skipping live buy.`);
+  }
   // Live entry guards (Tier 0): runs here so BOTH the orchestrator live path and
-  // the manual live-buy path (callbacks.js) are gated. Fail-closed.
-  const guard = await enforceEntryGuards({ candidate: selectedRow.candidate, amountLamports });
+  // the manual live-buy path (callbacks.js) are gated. Fail-closed. Uses tier profile.
+  const guard = await enforceEntryGuards({ candidate: selectedRow.candidate, amountLamports, tierProfile: profile });
   if (!guard.allowed) {
     logDecisionEvent({
       batchId,
@@ -31,7 +50,7 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
       decision,
       mode: 'live',
       action: 'live_entry_blocked_safety',
-      guardrails: { reasons: guard.reasons, priceImpactPct: guard.priceImpactPct },
+      guardrails: { reasons: guard.reasons, priceImpactPct: guard.priceImpactPct, tier },
     });
     throw new Error(`Safety guard blocked live buy: ${guard.reasons.join('; ')}`);
   }
@@ -43,11 +62,22 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
     inputMint: WSOL_MINT,
     outputMint: selectedRow.candidate.token.mint,
     amount: amountLamports,
+    slippageBps: profile.slippage_bps,
   });
   if (!swap.outputAmount) {
     swap.outputAmount = await fetchLiveTokenBalance(selectedRow.candidate.token.mint) || swap.outputAmount;
   }
   const positionId = await createLivePosition(selectedRow.id, selectedRow.candidate, decision, swap, `live_batch_${batchId}`);
+  if (positionId == null) {
+    // Tier filled between the pre-swap check and the insert (rare race). The swap
+    // already executed — surface loudly so the orphaned balance can be reconciled.
+    logDecisionEvent({
+      batchId, triggerCandidateId, selectedRow, rows, decision, mode: 'live',
+      action: 'live_entry_orphaned_tier_full', guardrails: { tier }, execution: { swap },
+    });
+    await sendTelegram(`⚠️ <b>Live buy executed but tier ${escapeHtml(tier)} full at insert</b> — token bought, no position row. Reconcile manually. Sig: ${escapeHtml(swap.signature || '?')}`);
+    return;
+  }
   logDecisionEvent({
     batchId,
     triggerCandidateId,
@@ -56,7 +86,7 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
     decision,
     mode: 'live',
     action: 'live_entry_executed',
-    guardrails: { balanceLamports: balance, amountLamports, minReserveLamports: LIVE_MIN_SOL_RESERVE_LAMPORTS },
+    guardrails: { balanceLamports: balance, amountLamports, minReserveLamports: LIVE_MIN_SOL_RESERVE_LAMPORTS, tier },
     execution: { positionId, swap },
   });
   await sendPositionOpen(positionId);
@@ -65,10 +95,13 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
 export async function executeLiveSell(position, reason) {
   const amount = position.token_amount_raw || position.token_amount_est;
   if (!amount || Number(amount) <= 0) throw new Error('Live position has no token amount to sell.');
+  // Use the position's tier slippage for exits too (null tier → Jupiter auto).
+  const slippageBps = position.tier ? getTierProfile(position.tier).slippage_bps : null;
   return executeJupiterSwap({
     inputMint: position.mint,
     outputMint: WSOL_MINT,
     amount,
+    slippageBps,
   });
 }
 
@@ -95,10 +128,22 @@ export async function executeConfirmedIntent(chatId, intentId) {
       ].join('\n'), { parse_mode: 'HTML', disable_web_page_preview: true });
     }
     const strat = activeStrategy();
-    const amountLamports = Math.floor((strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1)) * 1_000_000_000);
+    const { tier, profile } = resolveTierProfile(freshRow.candidate);
+    const sizeSol = profile.position_size_sol ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
+    const amountLamports = Math.floor(sizeSol * 1_000_000_000);
+    // Duplicate-mint guard before the swap (avoid orphaned tokens).
+    if (hasOpenPositionForMint(freshRow.candidate.token.mint)) {
+      db.prepare('UPDATE trade_intents SET status = ?, updated_at_ms = ? WHERE id = ?').run('rejected_duplicate', now(), intentId);
+      return bot.sendMessage(chatId, `🛑 Already holding an open position for this mint. Intent not executed.`, { parse_mode: 'HTML' });
+    }
+    // Per-tier cap before the swap (avoid orphaned tokens).
+    if (profile.max_open_positions > 0 && tierOpenCount(tier) >= profile.max_open_positions) {
+      db.prepare('UPDATE trade_intents SET status = ?, updated_at_ms = ? WHERE id = ?').run('rejected_tier_full', now(), intentId);
+      return bot.sendMessage(chatId, `🛑 Tier ${escapeHtml(tier)} is full (${profile.max_open_positions} open). Intent not executed.`, { parse_mode: 'HTML' });
+    }
     // Re-run entry guards: an intent may sit pending for minutes/hours, during
     // which liquidity can drain or the token can turn malicious. Fail-closed.
-    const guard = await enforceEntryGuards({ candidate: freshRow.candidate, amountLamports });
+    const guard = await enforceEntryGuards({ candidate: freshRow.candidate, amountLamports, tierProfile: profile });
     if (!guard.allowed) {
       db.prepare('UPDATE trade_intents SET status = ?, updated_at_ms = ? WHERE id = ?').run('rejected_safety', now(), intentId);
       return bot.sendMessage(chatId, [
@@ -116,11 +161,22 @@ export async function executeConfirmedIntent(chatId, intentId) {
       inputMint: WSOL_MINT,
       outputMint: freshRow.candidate.token.mint,
       amount: amountLamports,
+      slippageBps: profile.slippage_bps,
     });
     if (!swap.outputAmount) {
       swap.outputAmount = await fetchLiveTokenBalance(freshRow.candidate.token.mint) || swap.outputAmount;
     }
     const positionId = await createLivePosition(intent.candidate_id, freshRow.candidate, decision, swap, `confirmed_intent_${intentId}`);
+    if (positionId == null) {
+      // Tier filled between the pre-swap check and the insert (rare race). The
+      // swap already executed — surface loudly so the balance can be reconciled.
+      db.prepare('UPDATE trade_intents SET status = ?, updated_at_ms = ? WHERE id = ?').run('orphaned_tier_full', now(), intentId);
+      logDecisionEvent({
+        batchId: null, triggerCandidateId: intent.candidate_id, selectedRow: freshRow, rows: [],
+        decision, mode: 'live', action: 'live_entry_orphaned_tier_full', guardrails: { tier, intentId }, execution: { swap },
+      });
+      return bot.sendMessage(chatId, `⚠️ <b>Swap executed but tier ${escapeHtml(tier)} full at insert</b> — token bought, no position row. Reconcile manually. Sig: ${escapeHtml(swap.signature || '?')}`, { parse_mode: 'HTML' });
+    }
     db.prepare('UPDATE trade_intents SET status = ?, updated_at_ms = ? WHERE id = ?').run('executed_live', now(), intentId);
     logDecisionEvent({
       batchId: null,

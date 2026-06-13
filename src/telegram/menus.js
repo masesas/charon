@@ -5,6 +5,7 @@ import { savedWallets } from '../enrichment/wallets.js';
 import { gmgnStatusText } from '../enrichment/gmgn.js';
 import { formatPosition } from './format.js';
 import { ENABLE_LLM, LLM_API_KEY } from '../config.js';
+import { TIERS, getTierProfile } from '../execution/tiers.js';
 
 export function menuKeyboard() {
   return {
@@ -19,6 +20,9 @@ export function menuKeyboard() {
           { text: 'Wallets', callback_data: 'menu:wallets' },
           { text: 'Positions', callback_data: 'menu:positions' },
           { text: 'PnL', callback_data: 'menu:pnl' },
+        ],
+        [
+          { text: 'Tiers', callback_data: 'menu:tiers' },
         ],
       ],
     },
@@ -442,4 +446,73 @@ async function editMenuMessage(query, text, extra = {}) {
       ...extra,
     });
   }
+}
+
+// ── Tier execution profiles UI ─────────────────────────────────────────────
+
+export const tierNumericLabels = {
+  position_size_sol: 'Position size (SOL)',
+  slippage_bps: 'Slippage (bps)',
+  max_price_impact_pct: 'Max price impact (%)',
+  tp_percent: 'Take profit (%)',
+  sl_percent: 'Stop loss (%)',
+  trailing_percent: 'Trailing (%)',
+  partial_tp_at_percent: 'Partial TP at (%)',
+  partial_tp_sell_percent: 'Partial TP sell (%)',
+  max_open_positions: 'Max open positions',
+};
+
+export function tiersMenuText(selectedTier = 'lowcap') {
+  const lines = ['🪜 <b>Tier Execution Profiles</b>', ''];
+  for (const tier of TIERS) {
+    const p = getTierProfile(tier);
+    const active = tier === selectedTier ? '▶' : '○';
+    lines.push(`${active} <b>${tier}</b> — size ${fmtSol(p.position_size_sol)} · slip ${p.slippage_bps}bps · impact ≤${p.max_price_impact_pct}%`);
+    lines.push(`   TP ${fmtPct(p.tp_percent)} / SL ${fmtPct(p.sl_percent)} · trail ${p.trailing_enabled ? fmtPct(p.trailing_percent) : 'off'} · ${p.partial_tp ? `partial ${p.partial_tp_sell_percent}%@${fmtPct(p.partial_tp_at_percent)}` : 'no partial'} · max ${p.max_open_positions}`);
+  }
+  lines.push('', `Editing: <b>${escapeHtml(selectedTier)}</b>`);
+  return lines.join('\n');
+}
+
+export function tiersKeyboard(selectedTier = 'lowcap') {
+  const p = getTierProfile(selectedTier);
+  const t = selectedTier;
+  const selector = [TIERS.map(tier => ({
+    text: `${tier === selectedTier ? '▶ ' : ''}${tier}`,
+    callback_data: `tier:select:${tier}`,
+  }))];
+  const config = [
+    [
+      { text: `Size ${p.position_size_sol} SOL`, callback_data: `tierinput:${t}:position_size_sol` },
+      { text: `Slip ${p.slippage_bps}bps`, callback_data: `tierinput:${t}:slippage_bps` },
+    ],
+    [
+      { text: `TP +${p.tp_percent}%`, callback_data: `tierinput:${t}:tp_percent` },
+      { text: `SL ${p.sl_percent}%`, callback_data: `tierinput:${t}:sl_percent` },
+    ],
+    [
+      { text: `Trail ${p.trailing_enabled ? fmtPct(p.trailing_percent) : 'off'}`, callback_data: `tierinput:${t}:trailing_percent` },
+      { text: `Trail ${p.trailing_enabled ? 'on' : 'off'}`, callback_data: `tiercfg:${t}:trailing_enabled` },
+    ],
+    [
+      { text: `Impact ≤${p.max_price_impact_pct}%`, callback_data: `tierinput:${t}:max_price_impact_pct` },
+      { text: `Max Pos ${p.max_open_positions}`, callback_data: `tierinput:${t}:max_open_positions` },
+    ],
+    [
+      { text: `Partial ${p.partial_tp ? 'on' : 'off'}`, callback_data: `tiercfg:${t}:partial_tp` },
+      { text: `Part At ${p.partial_tp_at_percent}%`, callback_data: `tierinput:${t}:partial_tp_at_percent` },
+      { text: `Part Sell ${p.partial_tp_sell_percent}%`, callback_data: `tierinput:${t}:partial_tp_sell_percent` },
+    ],
+  ];
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '── Select Tier ──', callback_data: 'noop' }],
+        ...selector,
+        [{ text: '── Edit Profile ──', callback_data: 'noop' }],
+        ...config,
+        [{ text: '« Back', callback_data: 'menu:main' }],
+      ],
+    },
+  };
 }

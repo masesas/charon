@@ -18,6 +18,7 @@ import { short } from '../format.js';
 import { escapeHtml } from '../format.js';
 import { checkRiskBeforeBuy } from '../execution/riskManager.js';
 import { enforceEntryGuards } from '../execution/entryGuards.js';
+import { resolveTierProfile } from '../execution/tiers.js';
 
 export const seenSignalCandidates = new Map();
 
@@ -183,9 +184,10 @@ export async function handleApprovedBuy(selectedRow, decision, batchId, rows = [
   // manual live-buy path is also covered), so we only gate dry_run + confirm here.
   if (mode !== 'live') {
     const strat = activeStrategy();
-    const positionSizeSol = strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
+    const { profile: tierProfile } = resolveTierProfile(freshSelectedRow.candidate);
+    const positionSizeSol = tierProfile.position_size_sol ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
     const amountLamports = Math.floor(positionSizeSol * 1_000_000_000);
-    const guard = await enforceEntryGuards({ candidate: freshSelectedRow.candidate, amountLamports });
+    const guard = await enforceEntryGuards({ candidate: freshSelectedRow.candidate, amountLamports, tierProfile });
     if (!guard.allowed) {
       updateCandidateStatus(freshSelectedRow.id, 'guard_rejected');
       logDecisionEvent({
@@ -213,6 +215,21 @@ export async function handleApprovedBuy(selectedRow, decision, batchId, rows = [
 
   if (mode === 'dry_run') {
     const positionId = await createDryRunPosition(freshSelectedRow.id, freshSelectedRow.candidate, decision, `llm_batch_${batchId}`);
+    if (positionId == null) {
+      const tier = freshSelectedRow.candidate.tier || 'unknown';
+      logDecisionEvent({
+        batchId,
+        triggerCandidateId,
+        selectedRow: freshSelectedRow,
+        rows: executionRows,
+        decision,
+        mode,
+        action: 'entry_skipped_max_positions_tier',
+        guardrails: { tier, openPositions: openPositionCount() },
+      });
+      console.log(`[agent] tier ${tier} full, skipping dry-run buy ${freshSelectedRow.candidate.token.mint.slice(0, 8)}...`);
+      return;
+    }
     logDecisionEvent({
       batchId,
       triggerCandidateId,
@@ -221,7 +238,7 @@ export async function handleApprovedBuy(selectedRow, decision, batchId, rows = [
       decision,
       mode,
       action: 'dry_run_entry',
-      guardrails: { maxOpenPositions: numSetting('max_open_positions', 3), openPositions: openPositionCount() },
+      guardrails: { maxOpenPositions: numSetting('max_open_positions', 3), openPositions: openPositionCount(), tier: freshSelectedRow.candidate.tier },
       execution: { positionId },
     });
     await sendPositionOpen(positionId);

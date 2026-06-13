@@ -14,6 +14,7 @@ import { executeLiveSell } from './router.js';
 import { sendPositionExit } from '../telegram/send.js';
 import { updateDailyMetricsOnClose, markDailyLossLimitTriggered, isDailyLossLimitExceeded } from './riskManager.js';
 import { updateSourcePerformanceOnClose } from '../db/sourcePerformance.js';
+import { classifyTier, getTierProfile } from './tiers.js';
 
 export async function freshEntryMarket(mint, candidate) {
   const gmgn = await fetchGmgnTokenInfo(mint, false);
@@ -88,6 +89,11 @@ export async function refreshCandidateForExecution(row) {
       holdersRefreshed: Boolean(holders?.holders?.length),
     },
   };
+  // Classify tier from fresh mcap/liquidity (authoritative point). Attach to the
+  // refreshed object so it is persisted in the candidate snapshot and visible to
+  // entry guards + position creation.
+  refreshed.tier = classifyTier(refreshed.metrics.marketCapUsd, refreshed.metrics.liquidityUsd);
+  refreshed.tierProfile = getTierProfile(refreshed.tier);
   refreshed.filters = filterCandidate(refreshed);
   const executionFailures = [];
   if (!Number.isFinite(Number(refreshed.metrics.marketCapUsd)) || Number(refreshed.metrics.marketCapUsd) <= 0) {
@@ -138,13 +144,18 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
     exitReason = 'MAX_HOLD';
   }
 
-  // Partial TP check
-  if (!exitReason && strat?.partial_tp && !position.partial_tp_done && pnlPercent >= strat.partial_tp_at_percent) {
+  // Partial TP check — tier-controlled values persist on the position row; fall
+  // back to the strategy for legacy/null-tier positions.
+  const partialTpEnabled = position.partial_tp != null ? Boolean(position.partial_tp) : Boolean(strat?.partial_tp);
+  const partialTpAt = position.partial_tp_at_percent != null ? Number(position.partial_tp_at_percent) : Number(strat?.partial_tp_at_percent ?? 0);
+  const partialTpSell = position.partial_tp_sell_percent != null ? Number(position.partial_tp_sell_percent) : Number(strat?.partial_tp_sell_percent ?? 0);
+  // partial_tp_at_percent must be > 0; a 0 threshold means "disabled" even if the flag is on.
+  if (!exitReason && partialTpEnabled && partialTpAt > 0 && partialTpSell > 0 && !position.partial_tp_done && pnlPercent >= partialTpAt) {
     db.prepare('UPDATE dry_run_positions SET partial_tp_done = 1 WHERE id = ?').run(position.id);
-    console.log(`[position] ${position.id} partial TP at ${pnlPercent.toFixed(1)}% (${strat.partial_tp_sell_percent}% sell)`);
+    console.log(`[position] ${position.id} partial TP at ${pnlPercent.toFixed(1)}% (${partialTpSell}% sell)`);
     if (position.execution_mode === 'live' && position.token_amount_raw) {
       try {
-        const sellAmount = Math.floor(Number(position.token_amount_raw) * (strat.partial_tp_sell_percent / 100));
+        const sellAmount = Math.floor(Number(position.token_amount_raw) * (partialTpSell / 100));
         if (sellAmount > 0) {
           const sell = await executeLiveSell({ ...position, token_amount_raw: String(sellAmount) }, 'PARTIAL_TP');
           const remaining = Number(position.token_amount_raw) - sellAmount;
@@ -153,8 +164,8 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
             INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
             VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, 'PARTIAL_TP', ?)
           `).run(position.id, position.mint, now(), price, mcap,
-            position.size_sol * (strat.partial_tp_sell_percent / 100), sellAmount,
-            json({ pnlPercent, sell, partialSellPercent: strat.partial_tp_sell_percent, remaining }));
+            position.size_sol * (partialTpSell / 100), sellAmount,
+            json({ pnlPercent, sell, partialSellPercent: partialTpSell, remaining }));
           console.log(`[position] ${position.id} partial TP sold ${sellAmount} tokens, ${remaining} remaining`);
         }
       } catch (err) {

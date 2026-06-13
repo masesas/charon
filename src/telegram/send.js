@@ -76,6 +76,10 @@ export async function sendBatch(chatId, batchId) {
 }
 
 export async function sendPositionOpen(positionId) {
+  if (positionId == null) {
+    console.error('[send] sendPositionOpen called with null positionId (position not created?)');
+    return;
+  }
   const position = db.prepare('SELECT * FROM dry_run_positions WHERE id = ?').get(positionId);
   const label = position?.execution_mode === 'live' ? 'Live buy executed' : 'Dry-run buy stored';
   if (position) await sendTelegram(`✅ <b>${label}</b>\n\n${formatPosition(position)}`, positionButtons(positionId));
