@@ -231,6 +231,24 @@ export function initDb() {
 
   ensureColumn('candidates', 'signal_age_ms', 'INTEGER');
 
+  // Tier-routing columns (execution layer)
+  ensureColumn('dry_run_positions', 'tier', 'TEXT');
+  ensureColumn('dry_run_positions', 'partial_tp', 'INTEGER DEFAULT 0');
+  ensureColumn('dry_run_positions', 'partial_tp_at_percent', 'REAL');
+  ensureColumn('dry_run_positions', 'partial_tp_sell_percent', 'REAL');
+
+  // Tier profiles table (one global config per tier, on top of strategies)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tier_profiles (
+      tier TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      min_mcap_usd REAL,
+      max_mcap_usd REAL,
+      config_json TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL
+    )
+  `);
+
   // Provider health tracking table
   db.exec(`
     CREATE TABLE IF NOT EXISTS provider_health (
@@ -511,6 +529,27 @@ export function initDb() {
     if (cfg.max_mcap_to_liq_ratio === undefined) { cfg.max_mcap_to_liq_ratio = defaults.max_mcap_to_liq_ratio; changed = true; }
     if (changed) db.prepare('UPDATE strategies SET config_json = ? WHERE id = ?').run(JSON.stringify(cfg), row.id);
   }
+
+  // Seed tier execution profiles (one row per tier).
+  const tierInsert = db.prepare('INSERT OR IGNORE INTO tier_profiles (tier, name, min_mcap_usd, max_mcap_usd, config_json, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)');
+  tierInsert.run('lowcap', 'Lowcap', 0, 50000, JSON.stringify({
+    position_size_sol: 0.05, slippage_bps: 800, max_price_impact_pct: 10,
+    tp_percent: 80, sl_percent: -35, trailing_enabled: true, trailing_percent: 25,
+    partial_tp: true, partial_tp_at_percent: 60, partial_tp_sell_percent: 50,
+    max_open_positions: 2,
+  }), ts);
+  tierInsert.run('midcap', 'Midcap', 50000, 200000, JSON.stringify({
+    position_size_sol: 0.1, slippage_bps: 300, max_price_impact_pct: 6,
+    tp_percent: 50, sl_percent: -25, trailing_enabled: true, trailing_percent: 20,
+    partial_tp: false, partial_tp_at_percent: 0, partial_tp_sell_percent: 0,
+    max_open_positions: 2,
+  }), ts);
+  tierInsert.run('highcap', 'Highcap', 200000, 0, JSON.stringify({
+    position_size_sol: 0.15, slippage_bps: 150, max_price_impact_pct: 3,
+    tp_percent: 30, sl_percent: -15, trailing_enabled: true, trailing_percent: 12,
+    partial_tp: false, partial_tp_at_percent: 0, partial_tp_sell_percent: 0,
+    max_open_positions: 1,
+  }), ts);
 
   // Initialize config_changes table
   initConfigChanges();

@@ -16,6 +16,8 @@ import {
   sendTpSlDefaults,
   strategyMenuText,
   strategyKeyboard,
+  tiersMenuText,
+  tiersKeyboard,
 } from './menus.js';
 import { sendTelegram, sendBatch, sendPositionOpen, sendTradeIntent } from './send.js';
 import { candidateSummary } from './format.js';
@@ -24,15 +26,18 @@ import { storeDecision, logDecisionEvent } from '../db/decisions.js';
 import { createDryRunPosition, canOpenMorePositions, openPositionCount, tradingMode } from '../db/positions.js';
 import { executeLiveBuy, executeConfirmedIntent, rejectIntent } from '../execution/router.js';
 import { enforceEntryGuards } from '../execution/entryGuards.js';
+import { resolveTierProfile, getTierProfile, updateTierProfile, TIERS } from '../execution/tiers.js';
 import { escapeHtml } from '../format.js';
 import { sendCandidate, sendPosition, closePosition, updatePositionRule, toggleTrailing } from './commands.js';
-import { requestNumericFilterInput, requestStrategyNumericInput } from './input.js';
+import { requestNumericFilterInput, requestStrategyNumericInput, requestTierNumericInput } from './input.js';
+
+let selectedTierEdit = 'lowcap';
 
 export async function handleCallback(query) {
   const data = query.data || '';
   const chatId = query.message?.chat?.id || TELEGRAM_CHAT_ID;
   await answerCallback(query);
-  if (!data.startsWith('input:') && !data.startsWith('stratinput:')) {
+  if (!data.startsWith('input:') && !data.startsWith('stratinput:') && !data.startsWith('tierinput:')) {
     const { pendingNumericInputs } = await import('./input.js');
     pendingNumericInputs.delete(String(chatId));
   }
@@ -58,6 +63,28 @@ export async function handleCallback(query) {
   if (data === 'menu:pnl') {
     const { sendPnl } = await import('./send.js');
     return sendPnl(chatId, query);
+  }
+  if (data === 'menu:tiers') {
+    selectedTierEdit = 'lowcap';
+    return editMenuMessage(query, tiersMenuText(selectedTierEdit), tiersKeyboard(selectedTierEdit));
+  }
+  if (data.startsWith('tier:select:')) {
+    const tier = data.replace('tier:select:', '');
+    if (TIERS.includes(tier)) selectedTierEdit = tier;
+    return editMenuMessage(query, tiersMenuText(selectedTierEdit), tiersKeyboard(selectedTierEdit));
+  }
+  if (data.startsWith('tiercfg:')) {
+    const [, tier, key] = data.split(':');
+    if (TIERS.includes(tier)) {
+      const current = getTierProfile(tier);
+      updateTierProfile(tier, key, !current[key]);
+      selectedTierEdit = tier;
+    }
+    return editMenuMessage(query, tiersMenuText(selectedTierEdit), tiersKeyboard(selectedTierEdit));
+  }
+  if (data.startsWith('tierinput:')) {
+    const [, tier, key] = data.split(':');
+    return requestTierNumericInput(query, tier, key);
   }
   if (data === 'menu:settings') return editMenuMessage(query, `${agentText()}\n\n${filtersText()}`, navKeyboard([
     [
@@ -113,8 +140,10 @@ export async function handleCallback(query) {
       return;
     }
     // Manual dry buy: apply entry guards (fail-closed) before opening a paper position.
-    const manualAmountLamports = Math.floor((numSetting('dry_run_buy_sol', 0.1)) * 1_000_000_000);
-    const manualGuard = await enforceEntryGuards({ candidate, amountLamports: manualAmountLamports });
+    const { tier: manualTier, profile: manualProfile } = resolveTierProfile(candidate);
+    const manualSizeSol = manualProfile.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
+    const manualAmountLamports = Math.floor(manualSizeSol * 1_000_000_000);
+    const manualGuard = await enforceEntryGuards({ candidate, amountLamports: manualAmountLamports, tierProfile: manualProfile });
     if (!manualGuard.allowed) {
       return bot.sendMessage(chatId, [
         '🛑 <b>Manual buy blocked by safety guard</b>',
@@ -124,6 +153,9 @@ export async function handleCallback(query) {
     }
     if (manualGuard.fillEstimate) candidate.executionQuote = manualGuard.fillEstimate;
     const positionId = await createDryRunPosition(row.id, candidate, decision, 'manual_buy');
+    if (positionId == null) {
+      return bot.sendMessage(chatId, `🛑 Tier ${escapeHtml(manualTier)} is full (${manualProfile.max_open_positions} open). Close one first.`, { parse_mode: 'HTML' });
+    }
     logDecisionEvent({
       batchId: 'manual',
       triggerCandidateId: row.id,

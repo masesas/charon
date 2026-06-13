@@ -40,16 +40,20 @@ function buildFillEstimate(quote, amountLamports, solUsd, snapshotPriceUsd) {
  *
  * @returns {Promise<{allowed: boolean, reasons: string[], quote: object|null, fillEstimate: object|null, priceImpactPct: number|null}>}
  */
-export async function enforceEntryGuards({ candidate, amountLamports }) {
+export async function enforceEntryGuards({ candidate, amountLamports, tierProfile = null }) {
   const mint = candidate?.token?.mint;
   if (!mint) return { allowed: false, reasons: ['missing mint'], quote: null, fillEstimate: null, priceImpactPct: null };
+
+  // Tier profile drives slippage and the price-impact cap; fall back to globals.
+  const slippageBps = tierProfile?.slippage_bps ?? JUPITER_SLIPPAGE_BPS;
+  const maxImpactPct = tierProfile?.max_price_impact_pct ?? MAX_PRICE_IMPACT_PCT;
 
   // Guard 3: single buy-direction quote (WSOL -> token) at the real position size.
   const quote = await jupiterQuote({
     inputMint: WSOL_MINT,
     outputMint: mint,
     amount: amountLamports,
-    slippageBps: JUPITER_SLIPPAGE_BPS,
+    slippageBps,
   });
   if (!quote) {
     return { allowed: false, reasons: ['no buy route / quote failed'], quote: null, fillEstimate: null, priceImpactPct: null };
@@ -59,10 +63,10 @@ export async function enforceEntryGuards({ candidate, amountLamports }) {
   if (priceImpactPct == null || !Number.isFinite(priceImpactPct)) {
     return { allowed: false, reasons: ['price impact unknown'], quote, fillEstimate: null, priceImpactPct: null };
   }
-  if (priceImpactPct > MAX_PRICE_IMPACT_PCT) {
+  if (priceImpactPct > maxImpactPct) {
     return {
       allowed: false,
-      reasons: [`price impact ${priceImpactPct.toFixed(1)}% > max ${MAX_PRICE_IMPACT_PCT}%`],
+      reasons: [`price impact ${priceImpactPct.toFixed(1)}% > max ${maxImpactPct}%`],
       quote,
       fillEstimate: null,
       priceImpactPct,

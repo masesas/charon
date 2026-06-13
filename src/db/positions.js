@@ -2,6 +2,7 @@ import { db } from './connection.js';
 import { now, json, computeStrategyHash } from '../utils.js';
 import { numSetting, boolSetting, setting, activeStrategy } from './settings.js';
 import { fetchSolUsdPrice } from '../enrichment/jupiter.js';
+import { resolveTierProfile } from '../execution/tiers.js';
 
 export function openPositions() {
   return db.prepare('SELECT * FROM dry_run_positions WHERE status = ? ORDER BY opened_at_ms DESC').all('open');
@@ -9,6 +10,14 @@ export function openPositions() {
 
 export function openPositionCount() {
   return db.prepare('SELECT COUNT(*) AS count FROM dry_run_positions WHERE status = ?').get('open').count;
+}
+
+export function tierOpenCount(tier) {
+  return db.prepare("SELECT COUNT(*) AS count FROM dry_run_positions WHERE tier = ? AND status = 'open'").get(tier).count;
+}
+
+export function hasOpenPositionForMint(mint) {
+  return Boolean(db.prepare("SELECT 1 FROM dry_run_positions WHERE mint = ? AND status = 'open' LIMIT 1").get(mint));
 }
 
 export function canOpenMorePositions() {
@@ -30,7 +39,10 @@ export function allPositions(limit = 10) {
 export function createDryRunPosition(candidateId, candidate, decision, reason = 'llm_buy') {
   const strat = activeStrategy();
   const strategyVersionHash = computeStrategyHash(strat);
-  const sizeSol = strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
+  // Tier execution profile drives sizing/TP/SL/trailing/partial. Defensive
+  // classification covers paths that skip refreshCandidateForExecution.
+  const { tier, profile } = resolveTierProfile(candidate);
+  const sizeSol = profile.position_size_sol ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
   // Guard 4: prefer slippage-aware entry from the pre-trade buy quote when available
   // (attached as candidate.executionQuote by enforceEntryGuards); fall back to snapshot.
   const eq = candidate.executionQuote || null;
@@ -39,10 +51,13 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
     ? Number(eq.tokenAmountRaw)
     : null;
   const entryMcap = Number(candidate.metrics.marketCapUsd || candidate.metrics.graduatedMarketCapUsd || 0) || null;
-  const tp = Number(decision.suggested_tp_percent || strat.tp_percent || numSetting('default_tp_percent', 50));
-  const sl = Number(decision.suggested_sl_percent || strat.sl_percent || numSetting('default_sl_percent', -25));
-  const trailingEnabled = (strat.trailing_enabled ?? boolSetting('default_trailing_enabled', true)) ? 1 : 0;
-  const trailingPercent = strat.trailing_percent ?? numSetting('default_trailing_percent', 20);
+  const tp = Number(profile.tp_percent ?? decision.suggested_tp_percent ?? strat.tp_percent ?? numSetting('default_tp_percent', 50));
+  const sl = Number(profile.sl_percent ?? decision.suggested_sl_percent ?? strat.sl_percent ?? numSetting('default_sl_percent', -25));
+  const trailingEnabled = (profile.trailing_enabled ?? strat.trailing_enabled ?? boolSetting('default_trailing_enabled', true)) ? 1 : 0;
+  const trailingPercent = profile.trailing_percent ?? strat.trailing_percent ?? numSetting('default_trailing_percent', 20);
+  const partialTp = profile.partial_tp ? 1 : 0;
+  const partialTpAt = Number(profile.partial_tp_at_percent ?? 0);
+  const partialTpSell = Number(profile.partial_tp_sell_percent ?? 0);
 
   return db.transaction(() => {
     const existing = db.prepare(`
@@ -50,12 +65,20 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
     `).get(candidate.token.mint);
     if (existing) return existing.id;
 
+    // Per-tier slot cap (race-safe inside the transaction). Returns null sentinel
+    // so callers can distinguish "tier full" from "duplicate mint".
+    if (profile.max_open_positions > 0) {
+      const tierOpen = db.prepare("SELECT COUNT(*) AS c FROM dry_run_positions WHERE tier = ? AND status = 'open'").get(tier).c;
+      if (tierOpen >= profile.max_open_positions) return null;
+    }
+
     const result = db.prepare(`
       INSERT INTO dry_run_positions (
         candidate_id, mint, symbol, status, opened_at_ms, size_sol, entry_price, entry_mcap,
         token_amount_est, high_water_price, high_water_mcap, tp_percent, sl_percent,
-        trailing_enabled, trailing_percent, trailing_armed, llm_decision_id, strategy_id, strategy_version_hash, snapshot_json
-      ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+        trailing_enabled, trailing_percent, trailing_armed, llm_decision_id, strategy_id, strategy_version_hash,
+        tier, partial_tp, partial_tp_at_percent, partial_tp_sell_percent, snapshot_json
+      ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       candidateId,
       candidate.token.mint,
@@ -74,13 +97,17 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
       decision.id || null,
       strat.id,
       strategyVersionHash,
-      json({ candidate, decision, reason, strategy: strat.id }),
+      tier,
+      partialTp,
+      partialTpAt,
+      partialTpSell,
+      json({ candidate, decision, reason, strategy: strat.id, tier, tierProfile: profile }),
     );
     const positionId = Number(result.lastInsertRowid);
     db.prepare(`
       INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
       VALUES (?, ?, 'buy', ?, ?, ?, ?, ?, ?, ?)
-    `).run(positionId, candidate.token.mint, now(), entryPrice, entryMcap, sizeSol, tokenAmountEst, reason, json({ candidateId, decision }));
+    `).run(positionId, candidate.token.mint, now(), entryPrice, entryMcap, sizeSol, tokenAmountEst, reason, json({ candidateId, decision, tier }));
     db.prepare(`
       INSERT INTO tp_sl_rules (position_id, tp_percent, sl_percent, trailing_enabled, trailing_percent, updated_at_ms)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -92,7 +119,8 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
 export async function createLivePosition(candidateId, candidate, decision, swap, reason = 'live_buy') {
   const strat = activeStrategy();
   const strategyVersionHash = computeStrategyHash(strat);
-  const sizeSol = strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
+  const { tier, profile } = resolveTierProfile(candidate);
+  const sizeSol = profile.position_size_sol ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
   // Guard 4: compute the REAL entry price from the executed swap (SOL spent /
   // tokens received), not the pre-trade snapshot. Falls back to snapshot if the
   // swap or SOL/USD price is unavailable.
@@ -112,10 +140,13 @@ export async function createLivePosition(candidateId, candidate, decision, swap,
   }
   const tokenAmountEst = tokensReceived;
   const entryMcap = Number(candidate.metrics.marketCapUsd || candidate.metrics.graduatedMarketCapUsd || 0) || null;
-  const tp = Number(decision.suggested_tp_percent || strat.tp_percent || numSetting('default_tp_percent', 50));
-  const sl = Number(decision.suggested_sl_percent || strat.sl_percent || numSetting('default_sl_percent', -25));
-  const trailingEnabled = (strat.trailing_enabled ?? boolSetting('default_trailing_enabled', true)) ? 1 : 0;
-  const trailingPercent = strat.trailing_percent ?? numSetting('default_trailing_percent', 20);
+  const tp = Number(profile.tp_percent ?? decision.suggested_tp_percent ?? strat.tp_percent ?? numSetting('default_tp_percent', 50));
+  const sl = Number(profile.sl_percent ?? decision.suggested_sl_percent ?? strat.sl_percent ?? numSetting('default_sl_percent', -25));
+  const trailingEnabled = (profile.trailing_enabled ?? strat.trailing_enabled ?? boolSetting('default_trailing_enabled', true)) ? 1 : 0;
+  const trailingPercent = profile.trailing_percent ?? strat.trailing_percent ?? numSetting('default_trailing_percent', 20);
+  const partialTp = profile.partial_tp ? 1 : 0;
+  const partialTpAt = Number(profile.partial_tp_at_percent ?? 0);
+  const partialTpSell = Number(profile.partial_tp_sell_percent ?? 0);
 
   return db.transaction(() => {
     const existing = db.prepare(`
@@ -123,13 +154,19 @@ export async function createLivePosition(candidateId, candidate, decision, swap,
     `).get(candidate.token.mint);
     if (existing) return existing.id;
 
+    if (profile.max_open_positions > 0) {
+      const tierOpen = db.prepare("SELECT COUNT(*) AS c FROM dry_run_positions WHERE tier = ? AND status = 'open'").get(tier).c;
+      if (tierOpen >= profile.max_open_positions) return null;
+    }
+
     const result = db.prepare(`
       INSERT INTO dry_run_positions (
         candidate_id, mint, symbol, status, opened_at_ms, size_sol, entry_price, entry_mcap,
         token_amount_est, high_water_price, high_water_mcap, tp_percent, sl_percent,
         trailing_enabled, trailing_percent, trailing_armed, llm_decision_id,
-        execution_mode, entry_signature, token_amount_raw, strategy_id, strategy_version_hash, snapshot_json
-      ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'live', ?, ?, ?, ?, ?)
+        execution_mode, entry_signature, token_amount_raw, strategy_id, strategy_version_hash,
+        tier, partial_tp, partial_tp_at_percent, partial_tp_sell_percent, snapshot_json
+      ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'live', ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       candidateId,
       candidate.token.mint,
@@ -150,13 +187,17 @@ export async function createLivePosition(candidateId, candidate, decision, swap,
       swap.outputAmount || null,
       strat.id,
       strategyVersionHash,
-      json({ candidate, decision, reason, swap, strategy: strat.id }),
+      tier,
+      partialTp,
+      partialTpAt,
+      partialTpSell,
+      json({ candidate, decision, reason, swap, strategy: strat.id, tier, tierProfile: profile }),
     );
     const positionId = Number(result.lastInsertRowid);
     db.prepare(`
       INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
       VALUES (?, ?, 'buy', ?, ?, ?, ?, ?, ?, ?)
-    `).run(positionId, candidate.token.mint, now(), entryPrice, entryMcap, sizeSol, tokenAmountEst, reason, json({ candidateId, decision, swap }));
+    `).run(positionId, candidate.token.mint, now(), entryPrice, entryMcap, sizeSol, tokenAmountEst, reason, json({ candidateId, decision, swap, tier }));
     db.prepare(`
       INSERT INTO tp_sl_rules (position_id, tp_percent, sl_percent, trailing_enabled, trailing_percent, updated_at_ms)
       VALUES (?, ?, ?, ?, ?, ?)

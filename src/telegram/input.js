@@ -2,6 +2,7 @@ import { bot } from './bot.js';
 import { TELEGRAM_CHAT_ID } from '../config.js';
 import { now, parseNumericInput } from '../utils.js';
 import { activeStrategy, setSetting, updateStrategyConfig } from '../db/settings.js';
+import { updateTierProfile, TIERS } from '../execution/tiers.js';
 import {
   filtersText,
   filtersKeyboard,
@@ -10,6 +11,9 @@ import {
   strategyKeyboard,
   strategyMenuText,
   strategyNumericLabels,
+  tierNumericLabels,
+  tiersMenuText,
+  tiersKeyboard,
 } from './menus.js';
 
 export const pendingNumericInputs = new Map();
@@ -48,6 +52,23 @@ export async function requestStrategyNumericInput(query, key) {
   );
 }
 
+export async function requestTierNumericInput(query, tier, key) {
+  const chatId = query.message?.chat?.id || TELEGRAM_CHAT_ID;
+  if (!TIERS.includes(tier) || !tierNumericLabels[key]) return bot.sendMessage(chatId, 'Unknown tier setting.');
+  pendingNumericInputs.set(String(chatId), {
+    type: 'tier',
+    key,
+    tier,
+    at: now(),
+    messageId: query.message?.message_id || null,
+  });
+  return editMenuMessage(
+    query,
+    `Send a number for ${tier} ${tierNumericLabels[key]}.\nExamples: 0.05, 800, 50, -35`,
+    navKeyboard([[{ text: 'Cancel', callback_data: 'menu:tiers' }]]),
+  );
+}
+
 export async function consumeNumericFilterInput(chatId, text, userMessageId = null) {
   const pending = pendingNumericInputs.get(String(chatId));
   if (!pending) return false;
@@ -63,6 +84,21 @@ export async function consumeNumericFilterInput(chatId, text, userMessageId = nu
   }
   pendingNumericInputs.delete(String(chatId));
   if (userMessageId) bot.deleteMessage(chatId, userMessageId).catch(() => {});
+  if (pending.type === 'tier') {
+    updateTierProfile(pending.tier, pending.key, value);
+    if (pending.messageId) {
+      await bot.editMessageText(tiersMenuText(pending.tier), {
+        chat_id: chatId,
+        message_id: pending.messageId,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        ...tiersKeyboard(pending.tier),
+      }).catch(() => bot.sendMessage(chatId, tiersMenuText(pending.tier), { parse_mode: 'HTML', ...tiersKeyboard(pending.tier) }));
+    } else {
+      await bot.sendMessage(chatId, tiersMenuText(pending.tier), { parse_mode: 'HTML', ...tiersKeyboard(pending.tier) });
+    }
+    return true;
+  }
   if (pending.type === 'strategy') {
     const strat = activeStrategy();
     if (strat.id !== pending.strategyId) {
