@@ -23,6 +23,8 @@ import { candidateById, updateCandidateStatus } from '../db/candidates.js';
 import { storeDecision, logDecisionEvent } from '../db/decisions.js';
 import { createDryRunPosition, canOpenMorePositions, openPositionCount, tradingMode } from '../db/positions.js';
 import { executeLiveBuy, executeConfirmedIntent, rejectIntent } from '../execution/router.js';
+import { enforceEntryGuards } from '../execution/entryGuards.js';
+import { escapeHtml } from '../format.js';
 import { sendCandidate, sendPosition, closePosition, updatePositionRule, toggleTrailing } from './commands.js';
 import { requestNumericFilterInput, requestStrategyNumericInput } from './input.js';
 
@@ -102,9 +104,25 @@ export async function handleCallback(query) {
     const decisionId = storeDecision(row.id, candidate, decision);
     decision.id = decisionId;
     if (tradingMode() === 'live') {
-      await executeLiveBuy(row, decision, 'manual', [row], row.id);
+      // executeLiveBuy self-guards (Tier 0); errors surface to the user.
+      try {
+        await executeLiveBuy(row, decision, 'manual', [row], row.id);
+      } catch (err) {
+        return bot.sendMessage(chatId, `🛑 ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
+      }
       return;
     }
+    // Manual dry buy: apply entry guards (fail-closed) before opening a paper position.
+    const manualAmountLamports = Math.floor((numSetting('dry_run_buy_sol', 0.1)) * 1_000_000_000);
+    const manualGuard = await enforceEntryGuards({ candidate, amountLamports: manualAmountLamports });
+    if (!manualGuard.allowed) {
+      return bot.sendMessage(chatId, [
+        '🛑 <b>Manual buy blocked by safety guard</b>',
+        '',
+        `Reasons: ${escapeHtml(manualGuard.reasons.join('; '))}`,
+      ].join('\n'), { parse_mode: 'HTML', disable_web_page_preview: true });
+    }
+    if (manualGuard.fillEstimate) candidate.executionQuote = manualGuard.fillEstimate;
     const positionId = await createDryRunPosition(row.id, candidate, decision, 'manual_buy');
     logDecisionEvent({
       batchId: 'manual',
@@ -166,6 +184,8 @@ const STRAT_PRESETS = {
   max_open_positions: [1, 2, 3, 5, 10],
   min_mcap_usd: [0, 5000, 10000, 25000, 50000, 100000],
   max_mcap_usd: [0, 50000, 100000, 200000, 500000, 1000000],
+  min_liquidity_usd: [0, 4000, 8000, 15000, 25000, 50000],
+  max_mcap_to_liq_ratio: [0, 10, 15, 20, 25, 30, 40],
   trailing_percent: [10, 15, 20, 25, 30],
   min_source_count: [1, 2, 3, 4],
   min_holders: [0, 100, 500, 1000, 2000, 5000],

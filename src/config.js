@@ -45,6 +45,10 @@ export const RISK_MAX_LOSS_STREAK = Number(process.env.RISK_MAX_LOSS_STREAK || 3
 export const RISK_MAX_POSITION_SIZE_PERCENT = Number(process.env.RISK_MAX_POSITION_SIZE_PERCENT || 10);
 export const RISK_MAX_TOTAL_EXPOSURE_SOL = Number(process.env.RISK_MAX_TOTAL_EXPOSURE_SOL || 5.0);
 
+// Entry safety guards (Tier 0)
+export const MAX_PRICE_IMPACT_PCT = Number(process.env.MAX_PRICE_IMPACT_PCT || 10);
+export const GUARD_QUOTE_TIMEOUT_MS = Number(process.env.GUARD_QUOTE_TIMEOUT_MS || 8000);
+
 export const JSON_HEADERS = {
   Accept: 'application/json, text/plain, */*',
   'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',

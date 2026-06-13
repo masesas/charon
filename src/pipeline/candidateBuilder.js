@@ -61,6 +61,15 @@ export function filterCandidate(candidate) {
     failures.push(`market cap max: ${mcap} > ${strat.max_mcap_usd}`);
   }
 
+  // Liquidity gate (Tier 0): floor first, then mcap/liquidity ratio.
+  // Floor-first ordering prevents divide-by-zero (liq=0 is rejected by the floor).
+  const liq = Number(candidate.metrics.liquidityUsd ?? 0);
+  if (strat.min_liquidity_usd > 0 && (!Number.isFinite(liq) || liq < strat.min_liquidity_usd)) {
+    failures.push(`liquidity: ${liq} < ${strat.min_liquidity_usd}`);
+  } else if (strat.max_mcap_to_liq_ratio > 0 && liq > 0 && Number.isFinite(mcap) && mcap / liq > strat.max_mcap_to_liq_ratio) {
+    failures.push(`mcap/liq ratio: ${(mcap / liq).toFixed(1)} > ${strat.max_mcap_to_liq_ratio}`);
+  }
+
   // GMGN fees — only enforce when GMGN data is available; Jupiter has no equivalent
   if (strat.min_gmgn_total_fee_sol > 0 && candidate.gmgn !== null && totalFees < strat.min_gmgn_total_fee_sol) {
     failures.push(`GMGN total fees: ${totalFees} < ${strat.min_gmgn_total_fee_sol}`);

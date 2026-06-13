@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { DB_PATH } from '../config.js';
+import { initConfigChanges } from './configChanges.js';
 
 export const db = new Database(DB_PATH);
 
@@ -363,6 +364,8 @@ export function initDb() {
     token_age_max_ms: 3600000,
     min_mcap_usd: 7000,
     max_mcap_usd: 200000,
+    min_liquidity_usd: 8000,
+    max_mcap_to_liq_ratio: 25,
     min_fee_claim_sol: 0.5,
     min_gmgn_total_fee_sol: 10,
     min_holders: 0,
@@ -395,6 +398,8 @@ export function initDb() {
     token_age_max_ms: 86400000,
     min_mcap_usd: 25000,
     max_mcap_usd: 500000,
+    min_liquidity_usd: 15000,
+    max_mcap_to_liq_ratio: 20,
     min_fee_claim_sol: 0,
     min_gmgn_total_fee_sol: 0,
     min_holders: 0,
@@ -427,6 +432,8 @@ export function initDb() {
     token_age_max_ms: 86400000,
     min_mcap_usd: 10000,
     max_mcap_usd: 1000000,
+    min_liquidity_usd: 20000,
+    max_mcap_to_liq_ratio: 30,
     min_fee_claim_sol: 0,
     min_gmgn_total_fee_sol: 0,
     min_holders: 1000,
@@ -459,6 +466,8 @@ export function initDb() {
     token_age_max_ms: 3600000,
     min_mcap_usd: 5000,
     max_mcap_usd: 100000,
+    min_liquidity_usd: 4000,
+    max_mcap_to_liq_ratio: 40,
     min_fee_claim_sol: 0,
     min_gmgn_total_fee_sol: 0,
     min_holders: 0,
@@ -483,6 +492,25 @@ export function initDb() {
     use_llm: false,
     llm_min_confidence: 0,
   }), ts);
+
+  // Backfill Tier 0 liquidity-guard fields into existing strategy rows.
+  // INSERT OR IGNORE above does not update already-seeded strategies, so merge
+  // sensible defaults per strategy into any config_json that lacks them.
+  const liqDefaults = {
+    sniper: { min_liquidity_usd: 8000, max_mcap_to_liq_ratio: 25 },
+    dip_buy: { min_liquidity_usd: 15000, max_mcap_to_liq_ratio: 20 },
+    smart_money: { min_liquidity_usd: 20000, max_mcap_to_liq_ratio: 30 },
+    degen: { min_liquidity_usd: 4000, max_mcap_to_liq_ratio: 40 },
+  };
+  for (const row of db.prepare('SELECT id, config_json FROM strategies').all()) {
+    let cfg;
+    try { cfg = JSON.parse(row.config_json); } catch { continue; }
+    const defaults = liqDefaults[row.id] || { min_liquidity_usd: 8000, max_mcap_to_liq_ratio: 25 };
+    let changed = false;
+    if (cfg.min_liquidity_usd === undefined) { cfg.min_liquidity_usd = defaults.min_liquidity_usd; changed = true; }
+    if (cfg.max_mcap_to_liq_ratio === undefined) { cfg.max_mcap_to_liq_ratio = defaults.max_mcap_to_liq_ratio; changed = true; }
+    if (changed) db.prepare('UPDATE strategies SET config_json = ? WHERE id = ?').run(JSON.stringify(cfg), row.id);
+  }
 
   // Initialize config_changes table
   initConfigChanges();

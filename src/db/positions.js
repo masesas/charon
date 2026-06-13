@@ -1,6 +1,7 @@
 import { db } from './connection.js';
 import { now, json, computeStrategyHash } from '../utils.js';
 import { numSetting, boolSetting, setting, activeStrategy } from './settings.js';
+import { fetchSolUsdPrice } from '../enrichment/jupiter.js';
 
 export function openPositions() {
   return db.prepare('SELECT * FROM dry_run_positions WHERE status = ? ORDER BY opened_at_ms DESC').all('open');
@@ -30,7 +31,13 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
   const strat = activeStrategy();
   const strategyVersionHash = computeStrategyHash(strat);
   const sizeSol = strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
-  const entryPrice = Number(candidate.metrics.priceUsd || 0) || null;
+  // Guard 4: prefer slippage-aware entry from the pre-trade buy quote when available
+  // (attached as candidate.executionQuote by enforceEntryGuards); fall back to snapshot.
+  const eq = candidate.executionQuote || null;
+  const entryPrice = Number(eq?.entryPriceWithSlippage || candidate.metrics.priceUsd || 0) || null;
+  const tokenAmountEst = eq?.tokenAmountRaw != null && Number.isFinite(Number(eq.tokenAmountRaw))
+    ? Number(eq.tokenAmountRaw)
+    : null;
   const entryMcap = Number(candidate.metrics.marketCapUsd || candidate.metrics.graduatedMarketCapUsd || 0) || null;
   const tp = Number(decision.suggested_tp_percent || strat.tp_percent || numSetting('default_tp_percent', 50));
   const sl = Number(decision.suggested_sl_percent || strat.sl_percent || numSetting('default_sl_percent', -25));
@@ -57,7 +64,7 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
       sizeSol,
       entryPrice,
       entryMcap,
-      null,
+      tokenAmountEst,
       entryPrice,
       entryMcap,
       tp,
@@ -73,7 +80,7 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
     db.prepare(`
       INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
       VALUES (?, ?, 'buy', ?, ?, ?, ?, ?, ?, ?)
-    `).run(positionId, candidate.token.mint, now(), entryPrice, entryMcap, sizeSol, null, reason, json({ candidateId, decision }));
+    `).run(positionId, candidate.token.mint, now(), entryPrice, entryMcap, sizeSol, tokenAmountEst, reason, json({ candidateId, decision }));
     db.prepare(`
       INSERT INTO tp_sl_rules (position_id, tp_percent, sl_percent, trailing_enabled, trailing_percent, updated_at_ms)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -82,11 +89,28 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
   })();
 }
 
-export function createLivePosition(candidateId, candidate, decision, swap, reason = 'live_buy') {
+export async function createLivePosition(candidateId, candidate, decision, swap, reason = 'live_buy') {
   const strat = activeStrategy();
   const strategyVersionHash = computeStrategyHash(strat);
   const sizeSol = strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
-  const entryPrice = Number(candidate.metrics.priceUsd || 0) || null;
+  // Guard 4: compute the REAL entry price from the executed swap (SOL spent /
+  // tokens received), not the pre-trade snapshot. Falls back to snapshot if the
+  // swap or SOL/USD price is unavailable.
+  const snapshotPrice = Number(candidate.metrics.priceUsd || 0) || null;
+  const tokensReceived = swap?.outputAmount != null && Number.isFinite(Number(swap.outputAmount))
+    ? Number(swap.outputAmount)
+    : null;
+  const solSpent = swap?.inputAmount != null && Number.isFinite(Number(swap.inputAmount))
+    ? Number(swap.inputAmount) / 1e9
+    : sizeSol;
+  let entryPrice = snapshotPrice;
+  if (tokensReceived && tokensReceived > 0) {
+    const solUsd = await fetchSolUsdPrice();
+    if (Number.isFinite(Number(solUsd)) && Number(solUsd) > 0) {
+      entryPrice = (solSpent * Number(solUsd)) / tokensReceived;
+    }
+  }
+  const tokenAmountEst = tokensReceived;
   const entryMcap = Number(candidate.metrics.marketCapUsd || candidate.metrics.graduatedMarketCapUsd || 0) || null;
   const tp = Number(decision.suggested_tp_percent || strat.tp_percent || numSetting('default_tp_percent', 50));
   const sl = Number(decision.suggested_sl_percent || strat.sl_percent || numSetting('default_sl_percent', -25));
@@ -114,7 +138,7 @@ export function createLivePosition(candidateId, candidate, decision, swap, reaso
       sizeSol,
       entryPrice,
       entryMcap,
-      null,
+      tokenAmountEst,
       entryPrice,
       entryMcap,
       tp,
@@ -132,7 +156,7 @@ export function createLivePosition(candidateId, candidate, decision, swap, reaso
     db.prepare(`
       INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
       VALUES (?, ?, 'buy', ?, ?, ?, ?, ?, ?, ?)
-    `).run(positionId, candidate.token.mint, now(), entryPrice, entryMcap, sizeSol, null, reason, json({ candidateId, decision, swap }));
+    `).run(positionId, candidate.token.mint, now(), entryPrice, entryMcap, sizeSol, tokenAmountEst, reason, json({ candidateId, decision, swap }));
     db.prepare(`
       INSERT INTO tp_sl_rules (position_id, tp_percent, sl_percent, trailing_enabled, trailing_percent, updated_at_ms)
       VALUES (?, ?, ?, ?, ?, ?)
