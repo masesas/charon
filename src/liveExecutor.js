@@ -8,6 +8,7 @@ import {
   JSON_HEADERS,
   SOLANA_PRIVATE_KEY,
   SOLANA_RPC_URL,
+  GUARD_QUOTE_TIMEOUT_MS,
 } from './config.js';
 import { recordHealthSuccess, recordHealthFailure } from './health/providerHealth.js';
 import { now } from './utils.js';
@@ -72,6 +73,38 @@ export async function liveWalletBalanceLamports() {
   } catch (err) {
     recordHealthFailure('rpc', 'getBalance', err);
     throw err;
+  }
+}
+
+/**
+ * Walletless price quote (no taker required). Works in dry-run with no private key.
+ * Used by entry guards for price-impact gating and dry-run fill estimation.
+ * Returns the raw Jupiter quote object (incl. outAmount, inAmount, priceImpactPct)
+ * or null on failure (callers must fail-closed on null).
+ */
+export async function jupiterQuote({ inputMint, outputMint, amount, slippageBps = JUPITER_SLIPPAGE_BPS }) {
+  const start = now();
+  try {
+    const url = new URL('https://lite-api.jup.ag/swap/v1/quote');
+    url.searchParams.set('inputMint', inputMint);
+    url.searchParams.set('outputMint', outputMint);
+    url.searchParams.set('amount', String(amount));
+    url.searchParams.set('slippageBps', String(slippageBps));
+    const res = await axios.get(url.toString(), {
+      timeout: GUARD_QUOTE_TIMEOUT_MS,
+      headers: JSON_HEADERS,
+    });
+    const quote = res.data;
+    if (!quote || !quote.outAmount || Number(quote.outAmount) <= 0) {
+      recordHealthFailure('jupiter', 'quote', 'no route');
+      return null;
+    }
+    recordHealthSuccess('jupiter', 'quote', now() - start);
+    return quote;
+  } catch (err) {
+    recordHealthFailure('jupiter', 'quote', err);
+    if (err.response?.status !== 429) console.log(`[quote] ${outputMint.slice(0, 8)}... ${err.response?.status || ''} ${err.message}`);
+    return null;
   }
 }
 

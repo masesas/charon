@@ -86,6 +86,7 @@ function defaultStrategy() {
     id: 'sniper', name: 'Sniper',
     entry_mode: 'immediate', min_source_count: 2, require_fee_claim: true,
     token_age_max_ms: 3600000, min_mcap_usd: 7000, max_mcap_usd: 200000,
+    min_liquidity_usd: 8000, max_mcap_to_liq_ratio: 25,
     min_fee_claim_sol: 0.5, min_gmgn_total_fee_sol: 10, min_holders: 0,
     max_top20_holder_percent: 100, min_saved_wallet_holders: 0, max_ath_distance_pct: 0,
     min_graduated_volume_usd: 0, trending_min_volume_usd: 0, trending_min_swaps: 0,

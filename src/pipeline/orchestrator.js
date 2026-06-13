@@ -17,6 +17,7 @@ import { setCandidateHandler } from '../signals/feeClaim.js';
 import { short } from '../format.js';
 import { escapeHtml } from '../format.js';
 import { checkRiskBeforeBuy } from '../execution/riskManager.js';
+import { enforceEntryGuards } from '../execution/entryGuards.js';
 
 export const seenSignalCandidates = new Map();
 
@@ -174,6 +175,40 @@ export async function handleApprovedBuy(selectedRow, decision, batchId, rows = [
       `Failures: ${escapeHtml((freshSelectedRow.candidate.filters?.failures || []).join('; ') || 'fresh execution guard failed')}`,
     ].join('\n'));
     return;
+  }
+
+  // Execution-stage entry guards (Tier 0): Guard 2 (sellability/authority) +
+  // Guard 3 (price-impact). Single buy-quote also feeds the dry-run fill estimate.
+  // Fail-closed. The live branch is guarded inside executeLiveBuy instead (so the
+  // manual live-buy path is also covered), so we only gate dry_run + confirm here.
+  if (mode !== 'live') {
+    const strat = activeStrategy();
+    const positionSizeSol = strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
+    const amountLamports = Math.floor(positionSizeSol * 1_000_000_000);
+    const guard = await enforceEntryGuards({ candidate: freshSelectedRow.candidate, amountLamports });
+    if (!guard.allowed) {
+      updateCandidateStatus(freshSelectedRow.id, 'guard_rejected');
+      logDecisionEvent({
+        batchId,
+        triggerCandidateId,
+        selectedRow: freshSelectedRow,
+        rows: executionRows,
+        decision,
+        mode,
+        action: 'entry_rejected_safety',
+        guardrails: { reasons: guard.reasons, priceImpactPct: guard.priceImpactPct },
+      });
+      await sendTelegram([
+        '🛑 <b>Entry blocked by safety guard</b>',
+        '',
+        candidateSummary(freshSelectedRow.candidate, decision),
+        '',
+        `Reasons: ${escapeHtml(guard.reasons.join('; '))}`,
+      ].join('\n'));
+      return;
+    }
+    // Attach fill estimate so createDryRunPosition records slippage-aware entry + token amount (Guard 4).
+    if (guard.fillEstimate) freshSelectedRow.candidate.executionQuote = guard.fillEstimate;
   }
 
   if (mode === 'dry_run') {

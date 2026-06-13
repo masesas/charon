@@ -9,6 +9,7 @@ import { createLivePosition, canOpenMorePositions, openPositionCount } from '../
 import { intentById } from '../db/intents.js';
 import { logDecisionEvent } from '../db/decisions.js';
 import { refreshCandidateForExecution } from './positions.js';
+import { enforceEntryGuards } from './entryGuards.js';
 import { bot } from '../telegram/bot.js';
 import { candidateSummary } from '../telegram/format.js';
 import { sendPositionOpen, sendTelegram } from '../telegram/send.js';
@@ -18,6 +19,22 @@ import { createTradeIntent } from '../db/intents.js';
 export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], triggerCandidateId = null) {
   const strat = activeStrategy();
   const amountLamports = Math.floor((strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1)) * 1_000_000_000);
+  // Live entry guards (Tier 0): runs here so BOTH the orchestrator live path and
+  // the manual live-buy path (callbacks.js) are gated. Fail-closed.
+  const guard = await enforceEntryGuards({ candidate: selectedRow.candidate, amountLamports });
+  if (!guard.allowed) {
+    logDecisionEvent({
+      batchId,
+      triggerCandidateId,
+      selectedRow,
+      rows,
+      decision,
+      mode: 'live',
+      action: 'live_entry_blocked_safety',
+      guardrails: { reasons: guard.reasons, priceImpactPct: guard.priceImpactPct },
+    });
+    throw new Error(`Safety guard blocked live buy: ${guard.reasons.join('; ')}`);
+  }
   const balance = await liveWalletBalanceLamports();
   if (balance < amountLamports + LIVE_MIN_SOL_RESERVE_LAMPORTS) {
     throw new Error(`Insufficient SOL balance. Need ${fmtSol((amountLamports + LIVE_MIN_SOL_RESERVE_LAMPORTS) / 1_000_000_000)} SOL including reserve.`);
@@ -30,7 +47,7 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
   if (!swap.outputAmount) {
     swap.outputAmount = await fetchLiveTokenBalance(selectedRow.candidate.token.mint) || swap.outputAmount;
   }
-  const positionId = createLivePosition(selectedRow.id, selectedRow.candidate, decision, swap, `live_batch_${batchId}`);
+  const positionId = await createLivePosition(selectedRow.id, selectedRow.candidate, decision, swap, `live_batch_${batchId}`);
   logDecisionEvent({
     batchId,
     triggerCandidateId,
@@ -79,6 +96,17 @@ export async function executeConfirmedIntent(chatId, intentId) {
     }
     const strat = activeStrategy();
     const amountLamports = Math.floor((strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1)) * 1_000_000_000);
+    // Re-run entry guards: an intent may sit pending for minutes/hours, during
+    // which liquidity can drain or the token can turn malicious. Fail-closed.
+    const guard = await enforceEntryGuards({ candidate: freshRow.candidate, amountLamports });
+    if (!guard.allowed) {
+      db.prepare('UPDATE trade_intents SET status = ?, updated_at_ms = ? WHERE id = ?').run('rejected_safety', now(), intentId);
+      return bot.sendMessage(chatId, [
+        '🛑 <b>Trade intent blocked by safety guard</b>',
+        '',
+        `Reasons: ${escapeHtml(guard.reasons.join('; '))}`,
+      ].join('\n'), { parse_mode: 'HTML', disable_web_page_preview: true });
+    }
     const balance = await liveWalletBalanceLamports();
     if (balance < amountLamports + LIVE_MIN_SOL_RESERVE_LAMPORTS) {
       db.prepare('UPDATE trade_intents SET status = ?, updated_at_ms = ? WHERE id = ?').run('rejected_insufficient_balance', now(), intentId);
@@ -92,7 +120,7 @@ export async function executeConfirmedIntent(chatId, intentId) {
     if (!swap.outputAmount) {
       swap.outputAmount = await fetchLiveTokenBalance(freshRow.candidate.token.mint) || swap.outputAmount;
     }
-    const positionId = createLivePosition(intent.candidate_id, freshRow.candidate, decision, swap, `confirmed_intent_${intentId}`);
+    const positionId = await createLivePosition(intent.candidate_id, freshRow.candidate, decision, swap, `confirmed_intent_${intentId}`);
     db.prepare('UPDATE trade_intents SET status = ?, updated_at_ms = ? WHERE id = ?').run('executed_live', now(), intentId);
     logDecisionEvent({
       batchId: null,
