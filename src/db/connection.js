@@ -367,6 +367,17 @@ export function initDb() {
     trending_min_swaps: process.env.TRENDING_MIN_SWAPS || '0',
     trending_max_rug_ratio: process.env.TRENDING_MAX_RUG_RATIO || '0.3',
     trending_max_bundler_rate: process.env.TRENDING_MAX_BUNDLER_RATE || '0.5',
+    // Learning loop (all NEUTRAL by default — identical behavior to pre-feature)
+    risk_gate_enabled: 'false',
+    risk_score_max_gate: '100',
+    sizing_modifier_enabled: 'false',
+    sizing_min_multiplier: '0.5',
+    sizing_max_multiplier: '1.0',
+    source_reliability_enabled: 'false',
+    source_reliability_min_samples: '10',
+    source_reliability_threshold_k: '0',
+    confidence_floor: '40',
+    confidence_ceil: '95',
   };
   const insert = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   for (const [key, value] of Object.entries(defaults)) insert.run(key, value);

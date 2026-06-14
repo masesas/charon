@@ -2,7 +2,7 @@ import { db } from './connection.js';
 import { now, json, computeStrategyHash } from '../utils.js';
 import { numSetting, boolSetting, setting, activeStrategy } from './settings.js';
 import { fetchSolUsdPrice } from '../enrichment/jupiter.js';
-import { resolveTierProfile } from '../execution/tiers.js';
+import { resolveTierProfile, effectivePositionSizeSol } from '../execution/tiers.js';
 
 export function openPositions() {
   return db.prepare('SELECT * FROM dry_run_positions WHERE status = ? ORDER BY opened_at_ms DESC').all('open');
@@ -42,7 +42,7 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
   // Tier execution profile drives sizing/TP/SL/trailing/partial. Defensive
   // classification covers paths that skip refreshCandidateForExecution.
   const { tier, profile } = resolveTierProfile(candidate);
-  const sizeSol = profile.position_size_sol ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
+  const sizeSol = effectivePositionSizeSol(candidate, profile) ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
   // Guard 4: prefer slippage-aware entry from the pre-trade buy quote when available
   // (attached as candidate.executionQuote by enforceEntryGuards); fall back to snapshot.
   const eq = candidate.executionQuote || null;
@@ -120,7 +120,7 @@ export async function createLivePosition(candidateId, candidate, decision, swap,
   const strat = activeStrategy();
   const strategyVersionHash = computeStrategyHash(strat);
   const { tier, profile } = resolveTierProfile(candidate);
-  const sizeSol = profile.position_size_sol ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
+  const sizeSol = effectivePositionSizeSol(candidate, profile) ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
   // Guard 4: compute the REAL entry price from the executed swap (SOL spent /
   // tokens received), not the pre-trade snapshot. Falls back to snapshot if the
   // swap or SOL/USD price is unavailable.

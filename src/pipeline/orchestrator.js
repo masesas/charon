@@ -18,7 +18,30 @@ import { short } from '../format.js';
 import { escapeHtml } from '../format.js';
 import { checkRiskBeforeBuy } from '../execution/riskManager.js';
 import { enforceEntryGuards } from '../execution/entryGuards.js';
-import { resolveTierProfile } from '../execution/tiers.js';
+import { resolveTierProfile, effectivePositionSizeSol } from '../execution/tiers.js';
+import { computeSourceReliabilityScore, getSourceSampleCount } from '../db/sourcePerformance.js';
+
+/**
+ * Effective confidence threshold adjusted by the selected source's historical
+ * reliability. Cold-start safe: below min_samples it returns the base threshold
+ * unchanged (reliability 0 from no-data must NOT raise the bar). Neutral by
+ * default (source_reliability_enabled=false, k=0).
+ */
+export function effectiveConfidenceThreshold(candidate) {
+  const base = numSetting('llm_min_confidence', 75);
+  if (!boolSetting('source_reliability_enabled', false)) return base;
+  const route = candidate?.signals?.route;
+  const label = candidate?.signals?.label;
+  if (!route) return base;
+  const samples = getSourceSampleCount(route, label);
+  if (samples < numSetting('source_reliability_min_samples', 10)) return base;
+  const rel = computeSourceReliabilityScore(route, label); // 0-100, 50 pivot
+  const k = numSetting('source_reliability_threshold_k', 0);
+  const adj = base - k * (rel - 50) / 50;
+  const floor = numSetting('confidence_floor', 40);
+  const ceil = numSetting('confidence_ceil', 95);
+  return Math.min(ceil, Math.max(floor, adj));
+}
 
 export const seenSignalCandidates = new Map();
 
@@ -90,7 +113,7 @@ export async function processCandidateFromSignals(signals) {
 
   if (batchId) await sendBatchReveal(batchId, rows, batchDecision, candidateId);
 
-  if (selectedRow && boolSetting('agent_enabled', true) && batchDecision.verdict === 'BUY' && batchDecision.confidence >= numSetting('llm_min_confidence', 75)) {
+  if (selectedRow && boolSetting('agent_enabled', true) && batchDecision.verdict === 'BUY' && batchDecision.confidence >= effectiveConfidenceThreshold(selectedRow.candidate)) {
     if (!canOpenMorePositions()) {
       const max = numSetting('max_open_positions', 3);
       console.log(`[agent] max open positions reached (${openPositionCount()}/${max}), skipping buy ${selectedRow.candidate.token.mint}`);
@@ -107,7 +130,11 @@ export async function processCandidateFromSignals(signals) {
     }
 
     const strat = activeStrategy();
-    const positionSizeSol = strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
+    // Use the SAME effective size the trade will use (tier base × score modifier),
+    // so the exposure check matches the actual position, not the strategy default.
+    const { profile: preProfile } = resolveTierProfile(selectedRow.candidate);
+    const positionSizeSol = effectivePositionSizeSol(selectedRow.candidate, preProfile)
+      ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
     const riskCheck = checkRiskBeforeBuy(positionSizeSol);
     if (!riskCheck.allowed) {
       console.log(`[risk] blocked buy ${selectedRow.candidate.token.mint}: ${riskCheck.reason}`);
@@ -185,7 +212,10 @@ export async function handleApprovedBuy(selectedRow, decision, batchId, rows = [
   if (mode !== 'live') {
     const strat = activeStrategy();
     const { profile: tierProfile } = resolveTierProfile(freshSelectedRow.candidate);
-    const positionSizeSol = tierProfile.position_size_sol ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
+    // Quote at the EFFECTIVE size (tier base × score modifier) so the dry-run fill
+    // estimate matches the size_sol that createDryRunPosition will record.
+    const positionSizeSol = effectivePositionSizeSol(freshSelectedRow.candidate, tierProfile)
+      ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
     const amountLamports = Math.floor(positionSizeSol * 1_000_000_000);
     const guard = await enforceEntryGuards({ candidate: freshSelectedRow.candidate, amountLamports, tierProfile });
     if (!guard.allowed) {

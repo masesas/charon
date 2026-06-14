@@ -10,7 +10,7 @@ import { intentById } from '../db/intents.js';
 import { logDecisionEvent } from '../db/decisions.js';
 import { refreshCandidateForExecution } from './positions.js';
 import { enforceEntryGuards } from './entryGuards.js';
-import { resolveTierProfile, getTierProfile } from './tiers.js';
+import { resolveTierProfile, getTierProfile, effectivePositionSizeSol } from './tiers.js';
 import { bot } from '../telegram/bot.js';
 import { candidateSummary } from '../telegram/format.js';
 import { sendPositionOpen, sendTelegram } from '../telegram/send.js';
@@ -21,7 +21,7 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
   const strat = activeStrategy();
   // Resolve tier (defensive — covers manual live buy with an unrefreshed candidate).
   const { tier, profile } = resolveTierProfile(selectedRow.candidate);
-  const sizeSol = profile.position_size_sol ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
+  const sizeSol = effectivePositionSizeSol(selectedRow.candidate, profile) ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
   const amountLamports = Math.floor(sizeSol * 1_000_000_000);
   // Duplicate-mint guard BEFORE the swap: an open position already manages this
   // mint, so a second swap would orphan tokens (createLivePosition would return
@@ -129,7 +129,7 @@ export async function executeConfirmedIntent(chatId, intentId) {
     }
     const strat = activeStrategy();
     const { tier, profile } = resolveTierProfile(freshRow.candidate);
-    const sizeSol = profile.position_size_sol ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
+    const sizeSol = effectivePositionSizeSol(freshRow.candidate, profile) ?? strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
     const amountLamports = Math.floor(sizeSol * 1_000_000_000);
     // Duplicate-mint guard before the swap (avoid orphaned tokens).
     if (hasOpenPositionForMint(freshRow.candidate.token.mint)) {

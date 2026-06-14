@@ -2,6 +2,7 @@ import { WSOL_MINT, MAX_PRICE_IMPACT_PCT, JUPITER_SLIPPAGE_BPS } from '../config
 import { jupiterQuote } from '../liveExecutor.js';
 import { fetchSolUsdPrice } from '../enrichment/jupiter.js';
 import { checkTokenSafety } from './safetyCheck.js';
+import { numSetting, boolSetting } from '../db/settings.js';
 
 /**
  * Build a dry-run fill estimate from the buy-direction quote.
@@ -43,6 +44,16 @@ function buildFillEstimate(quote, amountLamports, solUsd, snapshotPriceUsd) {
 export async function enforceEntryGuards({ candidate, amountLamports, tierProfile = null }) {
   const mint = candidate?.token?.mint;
   if (!mint) return { allowed: false, reasons: ['missing mint'], quote: null, fillEstimate: null, priceImpactPct: null };
+
+  // Learning loop: risk_score hard gate (deterministic, no historical data).
+  // Default risk_score_max_gate=100 (off) so this is neutral until enabled.
+  if (boolSetting('risk_gate_enabled', false)) {
+    const riskMax = numSetting('risk_score_max_gate', 100);
+    const risk = Number(candidate?.scores?.risk_score);
+    if (Number.isFinite(risk) && risk >= riskMax) {
+      return { allowed: false, reasons: [`risk_score ${risk} >= ${riskMax}`], quote: null, fillEstimate: null, priceImpactPct: null };
+    }
+  }
 
   // Tier profile drives slippage and the price-impact cap; fall back to globals.
   const slippageBps = tierProfile?.slippage_bps ?? JUPITER_SLIPPAGE_BPS;
