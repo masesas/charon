@@ -596,6 +596,27 @@ export function initDb() {
     )
   `);
   db.exec('CREATE INDEX IF NOT EXISTS idx_lesson_reviews_status ON lesson_performance_reviews(status, scheduled_at_ms)');
+
+  // Dashboard command queue. The read-only dashboard enqueues commands here
+  // (e.g. force_close); the trading process drains them — see
+  // src/execution/dashboardCommands.js.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dashboard_commands (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at_ms INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      picked_at_ms INTEGER,
+      completed_at_ms INTEGER,
+      result_json TEXT
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_dashboard_commands_status ON dashboard_commands(status, created_at_ms)');
+
+  // Time index for signal_events. The base table only indexes mint, but the
+  // dashboard queries signal volume over time windows against 700k+ rows.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_signal_events_at ON signal_events(at_ms)');
 }
 
 export function ensureColumn(table, column, ddl) {
