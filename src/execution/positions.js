@@ -4,7 +4,8 @@ import { db } from '../db/connection.js';
 import { firstPositiveNumber, marketCapFromGmgn, tokenPriceFromGmgn } from '../utils.js';
 import { fetchGmgnTokenInfo } from '../enrichment/gmgn.js';
 import { fetchJupiterAsset, fetchJupiterHolders, fetchJupiterChartContext, fetchJupiterWalletPnl } from '../enrichment/jupiter.js';
-import { liveWalletPubkey } from '../liveExecutor.js';
+import { liveWalletPubkey, jupiterQuote } from '../liveExecutor.js';
+import { WSOL_MINT, JUPITER_SLIPPAGE_BPS } from '../config.js';
 import { fetchSavedWalletExposure } from '../enrichment/wallets.js';
 import { filterCandidate } from '../pipeline/candidateBuilder.js';
 import { openPositions } from '../db/positions.js';
@@ -113,7 +114,64 @@ export async function refreshCandidateForExecution(row) {
   return { ...row, candidate: refreshed };
 }
 
-const sellInProgress = new Set();
+// Position ids with an exit in flight. Shared between the monitor loop
+// (refreshPosition) and the manual Telegram close (closePosition) to prevent a
+// double-close race (duplicate trades + double-counted daily metrics).
+export const sellInProgress = new Set();
+
+/**
+ * Compute slippage-aware realized PnL for a DRY-RUN exit.
+ * PRIMARY: one real sell-quote (token -> WSOL) at the position's tier slippage.
+ * FALLBACK (quote unavailable or no token amount): value-based haircut using the
+ * tier slippage_bps. The haircut is applied to the exit PROCEEDS, not the return
+ * percentage — applying it to the percentage would shrink losses (wrong direction).
+ *
+ * @param {object} position - dry_run_positions row (carries tier, token_amount_est, size_sol)
+ * @param {number} grossPnlPercent - price-based gross PnL% (already buy-slippage-aware via entry_price)
+ * @returns {Promise<{pnlSol:number, pnlPercent:number, source:string}>}
+ */
+export async function computeRealizedExit(position, grossPnlPercent) {
+  const sizeSol = Number(position.size_sol);
+  // Guard: a zero/invalid size would produce Infinity/NaN PnL (stored as NULL by
+  // SQLite). Without a valid size there is nothing meaningful to realize.
+  if (!Number.isFinite(sizeSol) || sizeSol <= 0) {
+    throw new Error(`computeRealizedExit: invalid size_sol=${position.size_sol} for position ${position.id}`);
+  }
+  const slipBps = position.tier ? Number(getTierProfile(position.tier).slippage_bps) : JUPITER_SLIPPAGE_BPS;
+  const tokenAmt = Number(position.token_amount_est);
+
+  // PRIMARY: real sell-quote. A network throw must NOT propagate — fall through
+  // to the deterministic FALLBACK so an exit is never silently skipped.
+  if (Number.isFinite(tokenAmt) && tokenAmt > 0) {
+    try {
+      const quote = await jupiterQuote({
+        inputMint: position.mint,
+        outputMint: WSOL_MINT,
+        amount: Math.floor(tokenAmt),
+        slippageBps: slipBps,
+      });
+      if (quote && Number(quote.outAmount) > 0) {
+        const receivedSol = Number(quote.outAmount) / 1_000_000_000;
+        return {
+          pnlSol: receivedSol - sizeSol,
+          pnlPercent: (receivedSol / sizeSol - 1) * 100,
+          source: 'sell_quote',
+        };
+      }
+    } catch {
+      // fall through to FALLBACK haircut
+    }
+  }
+
+  // FALLBACK: value-based haircut
+  const grossExitValueSol = sizeSol * (1 + Number(grossPnlPercent) / 100);
+  const effectiveExitValueSol = grossExitValueSol * (1 - slipBps / 10000);
+  return {
+    pnlSol: effectiveExitValueSol - sizeSol,
+    pnlPercent: (effectiveExitValueSol / sizeSol - 1) * 100,
+    source: 'haircut',
+  };
+}
 
 export async function refreshPosition(position, { autoExit = true, jupiterPnl = null } = {}) {
   const asset = await fetchJupiterAsset(position.mint);
@@ -124,7 +182,12 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
   }
   const highWaterMcap = Math.max(Number(position.high_water_mcap || 0), Number(mcap));
   const highWaterPrice = Math.max(Number(position.high_water_price || 0), Number(price || 0));
-  let pnlPercent = (Number(mcap) / Number(position.entry_mcap) - 1) * 100;
+  // Price-based PnL using the real (slippage-aware) entry_price. Falls back to the
+  // mcap ratio for legacy/invalid entry_price rows so they keep working.
+  const entryPriceValid = Number.isFinite(Number(position.entry_price)) && Number(position.entry_price) > 0;
+  let pnlPercent = entryPriceValid
+    ? (Number(price) / Number(position.entry_price) - 1) * 100
+    : (Number(mcap) / Number(position.entry_mcap) - 1) * 100;
   let pnlSol = Number(position.size_sol) * pnlPercent / 100;
   if (jupiterPnl && Number.isFinite(Number(jupiterPnl.totalPnlPercentageNative))) {
     pnlPercent = Number(jupiterPnl.totalPnlPercentageNative);
@@ -133,7 +196,10 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
   const tpHit = pnlPercent >= Number(position.tp_percent);
   const slHit = pnlPercent <= Number(position.sl_percent);
   const trailingArmed = position.trailing_armed || (position.trailing_enabled && tpHit);
-  const trailDrop = highWaterMcap > 0 ? (Number(mcap) / highWaterMcap - 1) * 100 : 0;
+  // Trailing drop on the same basis as PnL (price when valid, else mcap).
+  const trailDrop = entryPriceValid
+    ? (highWaterPrice > 0 ? (Number(price) / highWaterPrice - 1) * 100 : 0)
+    : (highWaterMcap > 0 ? (Number(mcap) / highWaterMcap - 1) * 100 : 0);
   const trailingHit = trailingArmed && position.trailing_enabled && trailDrop <= -Math.abs(Number(position.trailing_percent));
   let exitReason = null;
   let closed = false;
@@ -225,20 +291,35 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
     if (candidate) updateSourcePerformanceOnClose(closedPosition, candidate);
     closed = true;
   } else if (exitReason && autoExit) {
+    // Dry-run exit: model slippage on the realized PnL (the branch now awaits a
+    // sell-quote, so guard against overlapping monitor cycles double-firing).
+    if (sellInProgress.has(position.id)) return { ...position, exitReason: null };
+    sellInProgress.add(position.id);
+    let realized;
+    try {
+      // Re-check the row is still open (a prior overlapping cycle may have closed it).
+      const stillOpen = db.prepare("SELECT status FROM dry_run_positions WHERE id = ?").get(position.id);
+      if (!stillOpen || stillOpen.status !== 'open') return { ...position, exitReason: null };
+      realized = await computeRealizedExit(position, pnlPercent);
+    } finally {
+      sellInProgress.delete(position.id);
+    }
+    finalPnlPercent = realized.pnlPercent;
+    finalPnlSol = realized.pnlSol;
     db.prepare(`
       UPDATE dry_run_positions
       SET status = 'closed', closed_at_ms = ?, exit_price = ?, exit_mcap = ?, exit_reason = ?, pnl_percent = ?, pnl_sol = ?
       WHERE id = ?
-    `).run(now(), price, mcap, exitReason, pnlPercent, pnlSol, position.id);
+    `).run(now(), price, mcap, exitReason, finalPnlPercent, finalPnlSol, position.id);
     db.prepare(`
       INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
       VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)
-    `).run(position.id, position.mint, now(), price, mcap, position.size_sol, position.token_amount_est, exitReason, json({ pnlPercent, pnlSol }));
+    `).run(position.id, position.mint, now(), price, mcap, position.size_sol, position.token_amount_est, exitReason, json({ pnlPercent: finalPnlPercent, pnlSol: finalPnlSol, grossPnlPercent: pnlPercent, slippageSource: realized.source }));
     // Track daily risk metrics
-    updateDailyMetricsOnClose({ pnl_sol: pnlSol, pnl_percent: pnlPercent });
+    updateDailyMetricsOnClose({ pnl_sol: finalPnlSol, pnl_percent: finalPnlPercent });
     if (isDailyLossLimitExceeded()) markDailyLossLimitTriggered();
     // Track source performance (Epic 6)
-    const closedPosition = { ...position, closed_at_ms: now(), pnl_percent: pnlPercent, pnl_sol: pnlSol };
+    const closedPosition = { ...position, closed_at_ms: now(), pnl_percent: finalPnlPercent, pnl_sol: finalPnlSol };
     const candidate = position.snapshot_json ? JSON.parse(position.snapshot_json).candidate : null;
     if (candidate) updateSourcePerformanceOnClose(closedPosition, candidate);
     closed = true;

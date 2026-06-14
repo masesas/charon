@@ -23,7 +23,7 @@ import {
 } from './menus.js';
 import { sendTelegram, sendBatch, sendPositionOpen } from './send.js';
 import { candidateSummary, formatPosition } from './format.js';
-import { refreshPosition } from '../execution/positions.js';
+import { refreshPosition, computeRealizedExit, sellInProgress } from '../execution/positions.js';
 import { executeLiveSell } from '../execution/router.js';
 import { reconcileWallet } from '../execution/reconcile.js';
 import { handleCallback, editMenuMessage } from './callbacks.js';
@@ -194,27 +194,54 @@ export async function sendPosition(chatId, id, query = null) {
 export async function closePosition(chatId, id, reason) {
   const row = db.prepare('SELECT * FROM dry_run_positions WHERE id = ?').get(id);
   if (!row || row.status !== 'open') return bot.sendMessage(chatId, 'Open position not found.');
-  const result = await refreshPosition(row, { autoExit: false });
-  const price = result?.price ?? row.high_water_price ?? row.entry_price;
-  const mcap = result?.mcap ?? row.high_water_mcap ?? row.entry_mcap;
-  const pnlPercent = row.entry_mcap ? (Number(mcap) / Number(row.entry_mcap) - 1) * 100 : 0;
-  const pnlSol = Number(row.size_sol) * pnlPercent / 100;
-  let sell = null;
-  if (row.execution_mode === 'live') sell = await executeLiveSell(row, reason);
-  db.prepare(`
-    UPDATE dry_run_positions
-    SET status = 'closed', closed_at_ms = ?, exit_price = ?, exit_mcap = ?, exit_reason = ?,
-        pnl_percent = ?, pnl_sol = ?, exit_signature = ?
-    WHERE id = ?
-  `).run(now(), price, mcap, reason, pnlPercent, pnlSol, sell?.signature || null, id);
-  db.prepare(`
-    INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
-    VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, row.mint, now(), price, mcap, row.size_sol, row.token_amount_est, reason, json({ pnlPercent, pnlSol, sell }));
-  // Track daily risk metrics
-  updateDailyMetricsOnClose({ pnl_sol: pnlSol, pnl_percent: pnlPercent });
-  const label = row.execution_mode === 'live' ? 'Closed live position' : 'Closed dry-run position';
-  await bot.sendMessage(chatId, `${label} #${id}: ${escapeHtml(reason)} ${fmtPct(pnlPercent)}`, { parse_mode: 'HTML' });
+  // Share the monitor's exit guard to avoid a double-close race (duplicate trades
+  // + double-counted daily metrics) with a concurrent monitorPositions cycle.
+  if (sellInProgress.has(id)) return bot.sendMessage(chatId, `Exit already in progress for #${id}.`);
+  sellInProgress.add(id);
+  try {
+    // Re-check still open (a concurrent cycle may have closed it before we acquired the guard).
+    const fresh = db.prepare('SELECT status FROM dry_run_positions WHERE id = ?').get(id);
+    if (!fresh || fresh.status !== 'open') return bot.sendMessage(chatId, 'Position already closed.');
+
+    const result = await refreshPosition(row, { autoExit: false });
+    const price = result?.price ?? row.high_water_price ?? row.entry_price;
+    const mcap = result?.mcap ?? row.high_water_mcap ?? row.entry_mcap;
+    // Gross price-based PnL (refreshPosition already computes it price-based with mcap fallback).
+    const grossPnlPercent = Number.isFinite(Number(result?.pnl_percent)) ? Number(result.pnl_percent) : 0;
+    let pnlPercent = grossPnlPercent;
+    let pnlSol = Number(row.size_sol) * pnlPercent / 100;
+    let sell = null;
+    if (row.execution_mode === 'live') {
+      sell = await executeLiveSell(row, reason);
+      const receivedLamports = Number(sell?.outputAmount || 0);
+      const receivedSol = receivedLamports > 0 ? receivedLamports / 1_000_000_000 : null;
+      if (receivedSol != null) {
+        pnlSol = receivedSol - Number(row.size_sol);
+        pnlPercent = (receivedSol / Number(row.size_sol) - 1) * 100;
+      }
+    } else {
+      // Dry-run: model exit slippage consistently with auto-exit.
+      const realized = await computeRealizedExit(row, grossPnlPercent);
+      pnlPercent = realized.pnlPercent;
+      pnlSol = realized.pnlSol;
+    }
+    db.prepare(`
+      UPDATE dry_run_positions
+      SET status = 'closed', closed_at_ms = ?, exit_price = ?, exit_mcap = ?, exit_reason = ?,
+          pnl_percent = ?, pnl_sol = ?, exit_signature = ?
+      WHERE id = ?
+    `).run(now(), price, mcap, reason, pnlPercent, pnlSol, sell?.signature || null, id);
+    db.prepare(`
+      INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
+      VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, row.mint, now(), price, mcap, row.size_sol, row.token_amount_est, reason, json({ pnlPercent, pnlSol, sell }));
+    // Track daily risk metrics
+    updateDailyMetricsOnClose({ pnl_sol: pnlSol, pnl_percent: pnlPercent });
+    const label = row.execution_mode === 'live' ? 'Closed live position' : 'Closed dry-run position';
+    await bot.sendMessage(chatId, `${label} #${id}: ${escapeHtml(reason)} ${fmtPct(pnlPercent)}`, { parse_mode: 'HTML' });
+  } finally {
+    sellInProgress.delete(id);
+  }
 }
 
 export async function updatePositionRule(chatId, id, field, nextValue, query = null) {
