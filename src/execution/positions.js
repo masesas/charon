@@ -5,7 +5,7 @@ import { firstPositiveNumber, marketCapFromGmgn, tokenPriceFromGmgn } from '../u
 import { fetchGmgnTokenInfo } from '../enrichment/gmgn.js';
 import { fetchJupiterAsset, fetchJupiterHolders, fetchJupiterChartContext, fetchJupiterWalletPnl } from '../enrichment/jupiter.js';
 import { liveWalletPubkey, jupiterQuote } from '../liveExecutor.js';
-import { WSOL_MINT, JUPITER_SLIPPAGE_BPS } from '../config.js';
+import { WSOL_MINT, JUPITER_SLIPPAGE_BPS, POSITION_VOLATILE_AGE_MS } from '../config.js';
 import { fetchSavedWalletExposure } from '../enrichment/wallets.js';
 import { filterCandidate } from '../pipeline/candidateBuilder.js';
 import { openPositions } from '../db/positions.js';
@@ -181,8 +181,10 @@ export async function computeRealizedExit(position, grossPnlPercent) {
   };
 }
 
-export async function refreshPosition(position, { autoExit = true, jupiterPnl = null } = {}) {
-  const asset = await fetchJupiterAsset(position.mint);
+export async function refreshPosition(position, { autoExit = true, jupiterPnl = null, forceFresh = false } = {}) {
+  // Fast lane passes forceFresh to bypass the 20s asset cache — without it, sub-3s
+  // polling would just re-read a stale cached price and never catch a fast dump.
+  const asset = await fetchJupiterAsset(position.mint, forceFresh ? { useCache: false } : {});
   const price = firstPositiveNumber(asset?.usdPrice, position.high_water_price, position.entry_price);
   const mcap = firstPositiveNumber(asset?.mcap, asset?.fdv, position.high_water_mcap, position.entry_mcap);
   if (!Number.isFinite(Number(mcap)) || !Number.isFinite(Number(position.entry_mcap)) || Number(position.entry_mcap) <= 0) {
@@ -261,15 +263,21 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
 
   db.prepare(`
     UPDATE dry_run_positions
-    SET high_water_mcap = ?, high_water_price = ?, trailing_armed = ?
+    SET high_water_mcap = ?, high_water_price = ?, trailing_armed = ?, last_pnl_percent = ?
     WHERE id = ?
-  `).run(highWaterMcap, highWaterPrice, trailingArmed ? 1 : 0, position.id);
+  `).run(highWaterMcap, highWaterPrice, trailingArmed ? 1 : 0, pnlPercent, position.id);
 
   if (exitReason && autoExit && position.execution_mode === 'live') {
     if (sellInProgress.has(position.id)) return { ...position, exitReason: null };
     sellInProgress.add(position.id);
     let sell;
     try {
+      // Re-check the row is still open before the irreversible live sell. The fast and
+      // slow monitor lanes can both snapshot this position via openPositions() before
+      // either reaches here; without this guard a position already closed by the other
+      // lane would be sold twice (real funds) and double-counted in daily metrics.
+      const stillOpen = db.prepare("SELECT status FROM dry_run_positions WHERE id = ?").get(position.id);
+      if (!stillOpen || stillOpen.status !== 'open') return { ...position, exitReason: null };
       sell = await executeLiveSell(position, exitReason);
     } finally {
       sellInProgress.delete(position.id);
@@ -353,21 +361,66 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
   };
 }
 
-export async function monitorPositions() {
-  const positions = openPositions();
+// Position ids currently being refreshed. Prevents the fast and slow lanes (two
+// separate intervals) from processing the same position concurrently — a position
+// can switch lanes between cycles (e.g. crossing the 5-minute age boundary), opening
+// a window where both loops could pick it up. sellInProgress guards the exit write;
+// this guards the whole refresh.
+const inFlight = new Set();
+
+/**
+ * Is a mature position near its SL/TP threshold? Uses the PnL% persisted by the last
+ * refresh cycle (last_pnl_percent) so classification adds no extra fetch. Returns
+ * false when no prior PnL exists (a brand-new position is already fast-lane by age).
+ */
+export function isNearThreshold(position) {
+  const pnl = Number(position.last_pnl_percent);
+  if (!Number.isFinite(pnl)) return false;
+  const near = numSetting('position_fast_near_threshold_pct', 8);
+  const sl = Number(position.sl_percent);
+  const tp = Number(position.tp_percent);
+  if (Number.isFinite(sl) && pnl <= sl + near) return true; // approaching SL from above
+  if (Number.isFinite(tp) && pnl >= tp - near) return true; // approaching TP from below
+  return false;
+}
+
+/**
+ * Classify a position into the 'fast' or 'slow' monitoring lane. Young positions
+ * (< POSITION_VOLATILE_AGE_MS) and mature positions near a threshold go fast.
+ */
+export function laneOf(position) {
+  if (now() - Number(position.opened_at_ms) < POSITION_VOLATILE_AGE_MS) return 'fast';
+  return isNearThreshold(position) ? 'fast' : 'slow';
+}
+
+/**
+ * Monitor open positions. lane = 'all' (default, every position), 'fast', or 'slow'.
+ * The app schedules two intervals: a fast one (lane='fast') and a slow one
+ * (lane='slow'). The fast lane fetches fresh (uncached) prices to catch dumps.
+ */
+export async function monitorPositions(lane = 'all') {
+  const positions = openPositions().filter(p => lane === 'all' || laneOf(p) === lane);
+  if (!positions.length) return;
   let walletPnlData = {};
   const pubkey = liveWalletPubkey();
   if (pubkey && positions.some(p => p.execution_mode === 'live')) {
     walletPnlData = await fetchJupiterWalletPnl(pubkey);
   }
+  const forceFresh = lane === 'fast';
   for (const position of positions) {
-    const jupiterPnl = position.execution_mode === 'live'
-      ? (walletPnlData[position.mint]?.pnl || null)
-      : null;
-    const result = await refreshPosition(position, { autoExit: true, jupiterPnl }).catch((err) => {
-      console.log(`[position] ${position.id} ${err.message}`);
-      return null;
-    });
-    if (result?.exitReason) await sendPositionExit(result);
+    if (inFlight.has(position.id)) continue; // loop-level reentrancy guard
+    inFlight.add(position.id);
+    try {
+      const jupiterPnl = position.execution_mode === 'live'
+        ? (walletPnlData[position.mint]?.pnl || null)
+        : null;
+      const result = await refreshPosition(position, { autoExit: true, jupiterPnl, forceFresh }).catch((err) => {
+        console.log(`[position] ${position.id} ${err.message}`);
+        return null;
+      });
+      if (result?.exitReason) await sendPositionExit(result);
+    } finally {
+      inFlight.delete(position.id);
+    }
   }
 }

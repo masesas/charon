@@ -33,6 +33,11 @@ export const TRENDING_POLL_MS = Number(process.env.TRENDING_POLL_MS || 60_000);
 export const TRENDING_LOOKBACK_MS = Number(process.env.TRENDING_LOOKBACK_MS || 10 * 60 * 1000);
 export const GMGN_CACHE_TTL_MS = Number(process.env.GMGN_CACHE_TTL_MS || 5 * 60 * 1000);
 export const POSITION_CHECK_MS = Number(process.env.POSITION_CHECK_MS || 10_000);
+// Adaptive monitoring (Tier 2): young/near-threshold positions are polled on a fast
+// lane (sub-3s) to catch fast dumps before SL is breached deeply; mature positions
+// stay on the slow lane (POSITION_CHECK_MS).
+export const POSITION_CHECK_FAST_MS = Number(process.env.POSITION_CHECK_FAST_MS || 2500);
+export const POSITION_VOLATILE_AGE_MS = Number(process.env.POSITION_VOLATILE_AGE_MS || 300_000);
 export const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 60_000);
 export const ENABLE_LLM = process.env.ENABLE_LLM !== 'false';
 export const SIGNAL_SERVER_URL = process.env.SIGNAL_SERVER_URL || 'http://localhost:3456';
