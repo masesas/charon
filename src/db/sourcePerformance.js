@@ -79,6 +79,21 @@ export function updateSourcePerformanceOnClose(position, candidate) {
 }
 
 /**
+ * Total closed-trade sample count for a source (optionally a signal type).
+ * Needed to disambiguate "no data" (0) from "bad source" (low reliability) at the
+ * cold-start guard — computeSourceReliabilityScore returns 0 for both.
+ */
+export function getSourceSampleCount(source, signalType = null) {
+  let query = 'SELECT COALESCE(SUM(total_signals), 0) AS n FROM signal_source_performance WHERE source = ?';
+  const params = [source];
+  if (signalType) {
+    query += ' AND signal_type = ?';
+    params.push(signalType);
+  }
+  return Number(db.prepare(query).get(...params)?.n || 0);
+}
+
+/**
  * Compute reliability score for a signal source (0-100)
  * Based on win rate, sample size, and consistency
  */

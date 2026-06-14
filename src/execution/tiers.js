@@ -1,4 +1,5 @@
 import { db } from '../db/connection.js';
+import { numSetting, boolSetting } from '../db/settings.js';
 
 /**
  * Tier classification + profile lookup.
@@ -101,6 +102,28 @@ export function updateTierProfile(tier, key, value) {
   db.prepare('UPDATE tier_profiles SET config_json = ? WHERE tier = ?').run(JSON.stringify(next), t);
   tierCache.delete(t);
   return next;
+}
+
+/**
+ * Effective position size = tier base size scaled by a deterministic score-based
+ * multiplier (quality raises, risk lowers), clamped within [min, max] where max
+ * defaults to 1.0 so it never exceeds the tier base. Pure function of scores +
+ * profile, so independent reads (live swap amount vs stored size_sol) agree.
+ * Neutral (returns base) when sizing_modifier_enabled is false.
+ */
+export function effectivePositionSizeSol(candidate, profile) {
+  const base = Number(profile?.position_size_sol);
+  // Return undefined (not NaN) when base is invalid so callers' `?? fallback` works
+  // (NaN ?? x === NaN, which would silently corrupt the size).
+  if (!Number.isFinite(base) || base <= 0) return undefined;
+  if (!boolSetting('sizing_modifier_enabled', false)) return base;
+  const q = Number(candidate?.scores?.quality_score ?? 50);
+  const r = Number(candidate?.scores?.risk_score ?? 50);
+  let m = 1 + ((q - 50) - (r - 50)) / 100; // q===r → 1.0
+  const lo = numSetting('sizing_min_multiplier', 0.5);
+  const hi = numSetting('sizing_max_multiplier', 1.0);
+  m = Math.min(hi, Math.max(lo, m));
+  return base * m;
 }
 
 export function resolveTierProfile(candidate) {

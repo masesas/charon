@@ -16,6 +16,7 @@ import { sendPositionExit } from '../telegram/send.js';
 import { updateDailyMetricsOnClose, markDailyLossLimitTriggered, isDailyLossLimitExceeded } from './riskManager.js';
 import { updateSourcePerformanceOnClose } from '../db/sourcePerformance.js';
 import { classifyTier, getTierProfile } from './tiers.js';
+import { scoreCandidate } from '../pipeline/scoring.js';
 
 export async function freshEntryMarket(mint, candidate) {
   const gmgn = await fetchGmgnTokenInfo(mint, false);
@@ -96,6 +97,13 @@ export async function refreshCandidateForExecution(row) {
   refreshed.tier = classifyTier(refreshed.metrics.marketCapUsd, refreshed.metrics.liquidityUsd);
   refreshed.tierProfile = getTierProfile(refreshed.tier);
   refreshed.filters = filterCandidate(refreshed);
+  // Recompute scores from FRESH data (holders/mcap/rug just refreshed). Without
+  // this the risk gate + sizing modifier would read stale build-time scores.
+  const rescored = scoreCandidate(refreshed);
+  refreshed.scores = rescored.scores;
+  refreshed.confidence_score = rescored.confidence_score;
+  refreshed.risk_score = rescored.risk_score;
+  refreshed.quality_score = rescored.quality_score;
   const executionFailures = [];
   if (!Number.isFinite(Number(refreshed.metrics.marketCapUsd)) || Number(refreshed.metrics.marketCapUsd) <= 0) {
     executionFailures.push('execution mcap: missing');
