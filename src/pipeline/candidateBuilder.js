@@ -40,6 +40,11 @@ export function filterCandidate(candidate) {
   const holderCount = Number(candidate.metrics.holderCount || 0);
   const trendingVolume = Number(candidate.trending?.volume ?? 0);
   const trendingSwaps = Number(candidate.trending?.swaps ?? 0);
+  // Swap count is structurally absent for some trending sources (axiom_trending
+  // hardcodes 0; jupiter_trending/server feeds deliver null buys+sells). Treat a
+  // raw `swaps` of null/undefined as "no data" so the gate doesn't reject on a
+  // field that was never populated — same pattern as the GMGN-fees guard below.
+  const trendingSwapsAvailable = candidate.trending?.swaps != null && Number.isFinite(trendingSwaps);
   const rugRatio = Number(candidate.trending?.rug_ratio ?? 0);
   const bundlerRate = Number(candidate.trending?.bundler_rate ?? 0);
 
@@ -108,7 +113,7 @@ export function filterCandidate(candidate) {
     if (strat.trending_min_volume_usd > 0 && trendingVolume < strat.trending_min_volume_usd) {
       failures.push(`trending volume: ${trendingVolume} < ${strat.trending_min_volume_usd}`);
     }
-    if (strat.trending_min_swaps > 0 && trendingSwaps < strat.trending_min_swaps) {
+    if (strat.trending_min_swaps > 0 && trendingSwapsAvailable && trendingSwaps < strat.trending_min_swaps) {
       failures.push(`trending swaps: ${trendingSwaps} < ${strat.trending_min_swaps}`);
     }
     if (strat.trending_max_rug_ratio > 0 && Number.isFinite(rugRatio) && rugRatio > strat.trending_max_rug_ratio) {
