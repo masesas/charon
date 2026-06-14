@@ -341,7 +341,7 @@ export function initDb() {
     trading_mode: process.env.TRADING_MODE || 'dry_run',
     llm_candidate_pick_count: process.env.LLM_CANDIDATE_PICK_COUNT || '10',
     llm_candidate_max_age_ms: process.env.LLM_CANDIDATE_MAX_AGE_MS || String(10 * 60 * 1000),
-    llm_min_confidence: '75',
+    llm_min_confidence: '65',
     max_open_positions: process.env.MAX_OPEN_POSITIONS || '3',
     dry_run_buy_sol: '0.1',
     default_tp_percent: '50',
@@ -428,7 +428,7 @@ export function initDb() {
     partial_tp_sell_percent: 0,
     max_hold_ms: 0,
     use_llm: true,
-    llm_min_confidence: 50,
+    llm_min_confidence: 65,
   }), ts);
 
   stratInsert.run('dip_buy', 'Dip Buy', 0, JSON.stringify({

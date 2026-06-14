@@ -28,7 +28,7 @@ import { computeSourceReliabilityScore, getSourceSampleCount } from '../db/sourc
  * default (source_reliability_enabled=false, k=0).
  */
 export function effectiveConfidenceThreshold(candidate) {
-  const base = numSetting('llm_min_confidence', 75);
+  const base = numSetting('llm_min_confidence', 65);
   if (!boolSetting('source_reliability_enabled', false)) return base;
   const route = candidate?.signals?.route;
   const label = candidate?.signals?.label;
@@ -168,7 +168,7 @@ export async function processCandidateFromSignals(signals) {
       action: selectedRow ? 'entry_not_approved' : 'no_candidate_selected',
       guardrails: {
         agentEnabled: boolSetting('agent_enabled', true),
-        confidenceThreshold: numSetting('llm_min_confidence', 75),
+        confidenceThreshold: numSetting('llm_min_confidence', 65),
         openPositions: openPositionCount(),
         maxOpenPositions: numSetting('max_open_positions', 3),
       },
