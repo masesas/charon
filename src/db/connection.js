@@ -233,6 +233,9 @@ export function initDb() {
 
   // Tier-routing columns (execution layer)
   ensureColumn('dry_run_positions', 'tier', 'TEXT');
+  // Tier 2 adaptive monitor: last observed PnL% per cycle, used to classify a mature
+  // position into the fast lane when it nears its SL/TP threshold (no extra fetch).
+  ensureColumn('dry_run_positions', 'last_pnl_percent', 'REAL');
   ensureColumn('dry_run_positions', 'partial_tp', 'INTEGER DEFAULT 0');
   ensureColumn('dry_run_positions', 'partial_tp_at_percent', 'REAL');
   ensureColumn('dry_run_positions', 'partial_tp_sell_percent', 'REAL');
@@ -378,6 +381,9 @@ export function initDb() {
     llm_fallback_max_risk: '45',
     llm_fallback_confidence: '55',
     llm_alert_fail_streak: '5',
+    // Adaptive monitor (Tier 2): a mature position whose last PnL% is within this many
+    // points of its SL or TP is promoted to the fast lane.
+    position_fast_near_threshold_pct: '8',
     // Learning loop (all NEUTRAL by default — identical behavior to pre-feature)
     risk_gate_enabled: 'false',
     risk_score_max_gate: '100',
