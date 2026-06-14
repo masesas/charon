@@ -21,9 +21,40 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    # Uncomment to expose metrics/health endpoint if added
-    # ports:
-    #   - "3000:3000"
+  # Mobile dashboard — separate read-mostly process. Crash-isolated from the
+  # trading agent; opens the same SQLite file (WAL-safe concurrent reader).
+  charon-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: node dashboard/server.js
+    container_name: charon-dashboard
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DB_PATH=/app/data/charon.db
+      - DASHBOARD_HOST=0.0.0.0   # safe: only reachable inside charon-net + via cloudflared
+      - DASHBOARD_PORT=3000
+    volumes:
+      - charon-data:/app/data    # SAME volume as the agent → same DB file
+    networks:
+      - charon-net
+    depends_on:
+      - charon
+
+  # Cloudflare Tunnel — exposes the dashboard over HTTPS with no open inbound port.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: charon-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - charon-net
+    depends_on:
+      - charon-dashboard
 
   # Optional: Add monitoring stack
   # prometheus:

@@ -187,6 +187,28 @@ Charon uses `charon.sqlite` as source of truth. It stores:
 
 Open positions resume monitoring after restart.
 
+## Dashboard
+
+A mobile-first web dashboard lives in `dashboard/` and runs as a **separate, read-mostly process** alongside the agent. It opens the same SQLite file (WAL-safe concurrent reader), so a dashboard fault can never stop trading.
+
+Screens: Overview (agent state, today's PnL, provider/LLM health), Positions (open/closed + price sparkline), Decision Funnel, Signals & Sources, Learning & Config.
+
+Controls (guarded): pause/resume the agent and switch the active strategy (idempotent `settings`/`strategies` writes the agent hot-reads). Force-close is **enqueued** to a `dashboard_commands` table and executed by the trading process on its next monitor tick — the dashboard has no wallet/RPC access.
+
+```bash
+# Generate a token
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+# Set it in .env
+DASHBOARD_TOKEN=<token>
+
+# Run (loopback by default)
+npm run dashboard
+# → http://127.0.0.1:3000
+```
+
+The process binds `127.0.0.1` by default and is intended to be exposed via **Cloudflare Tunnel** (no open inbound port). `docker-compose up` starts `charon`, `charon-dashboard`, and a `cloudflared` service (set `CLOUDFLARE_TUNNEL_TOKEN`). Zero new npm dependencies — the front end uses Alpine.js, HTMX, and uPlot from pinned CDNs.
+
 ## Verification
 
 ```bash

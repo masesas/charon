@@ -9,6 +9,7 @@ import { processCandidateFromSignals, maybeProcessDegenCandidate } from './pipel
 import { sendTelegram } from './telegram/send.js';
 import { makeFailureTracker } from './utils.js';
 import { checkPendingReviews } from './learning/feedback.js';
+import { drainDashboardCommands } from './execution/dashboardCommands.js';
 
 setDefaultResultOrder('ipv4first');
 validateConfig();
@@ -64,6 +65,9 @@ export async function startCharon() {
   // breached deeply during a fast dump. Each lane processes a disjoint subset per cycle.
   const trackPositions = makeFailureTracker('position monitor', (msg) => sendTelegram(msg));
   setInterval(() => trackPositions(() => monitorPositions('slow')), POSITION_CHECK_MS);
+
+  // Drain dashboard-enqueued commands (e.g. force-close) on the slow lane.
+  setInterval(() => drainDashboardCommands().catch(err => console.log(`[dashboard-cmd] ${err.message}`)), POSITION_CHECK_MS);
   const trackPositionsFast = makeFailureTracker('position monitor (fast)', (msg) => sendTelegram(msg));
   setInterval(() => trackPositionsFast(() => monitorPositions('fast')), POSITION_CHECK_FAST_MS);
 
