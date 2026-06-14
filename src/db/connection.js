@@ -367,6 +367,17 @@ export function initDb() {
     trending_min_swaps: process.env.TRENDING_MIN_SWAPS || '0',
     trending_max_rug_ratio: process.env.TRENDING_MAX_RUG_RATIO || '0.3',
     trending_max_bundler_rate: process.env.TRENDING_MAX_BUNDLER_RATE || '0.5',
+    // LLM resilience (Tier 1). Retry transient failures, then fall back to a
+    // deterministic score-based decision instead of going silent. Fallback
+    // confidence (55) is intentionally below llm_min_confidence so restoring the
+    // LLM does not silently make the agent trade on heuristics — raise it to opt in.
+    llm_max_retries: '2',
+    llm_retry_backoff_ms: '1000',
+    llm_fallback_enabled: 'true',
+    llm_fallback_min_quality: '60',
+    llm_fallback_max_risk: '45',
+    llm_fallback_confidence: '55',
+    llm_alert_fail_streak: '5',
     // Learning loop (all NEUTRAL by default — identical behavior to pre-feature)
     risk_gate_enabled: 'false',
     risk_score_max_gate: '100',
