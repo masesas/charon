@@ -20,7 +20,7 @@ export function shell() {
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">⛴ Charon</div>
+    <div class="brand">⛴ Charon Agent</div>
     <div class="topbar-right">
       <span class="pill" :class="overview.agent && overview.agent.enabled ? 'pill-on' : 'pill-off'"
             x-text="overview.agent ? (overview.agent.enabled ? 'RUNNING' : 'PAUSED') : '…'"></span>

@@ -1,5 +1,4 @@
-version: '3.8'
-
+name: charon-trading
 services:
   charon:
     build:
@@ -9,9 +8,24 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      # Pin the DB inside the mounted volume so it survives container recreate
+      # and matches the path the dashboard opens. Overrides any DB_PATH in .env.
+      - DB_PATH=/app/data/charon.db
+      # The LLM proxy listens on the HOST loopback. Inside this container
+      # `localhost` is the container itself, so .env's localhost:20128 yields
+      # ECONNREFUSED on every call (100% LLM failure). Rewrite the host part to
+      # host.docker.internal (mapped via extra_hosts below) so the engine reaches
+      # the proxy on the host. Keeps the rest of the .env URL (port + /api/v1).
+      - LLM_BASE_URL=http://host.docker.internal:20128/api/v1
+    # Map host.docker.internal to the host gateway. Required on Linux (VPS);
+    # harmless on Docker Desktop where it already resolves.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      # Persist SQLite database
-      - charon-data:/app/data
+      # Bind-mount the host ./data dir so the container reads/writes the SAME
+      # SQLite file as the host (./data/charon.db). Source of truth lives on disk.
+      - ./data:/app/data
       # Optional: mount logs
       - charon-logs:/app/logs
     networks:
@@ -35,26 +49,48 @@ services:
     environment:
       - DB_PATH=/app/data/charon.db
       - DASHBOARD_HOST=0.0.0.0   # safe: only reachable inside charon-net + via cloudflared
-      - DASHBOARD_PORT=3000
+      - DASHBOARD_PORT=3210
+    # Bind to host loopback only. Lets you open the dashboard locally
+    # (http://127.0.0.1:3210) without exposing it on the VPS public interface —
+    # remote access still goes through the cloudflared tunnel.
+    ports:
+      - "127.0.0.1:3210:3210"
     volumes:
-      - charon-data:/app/data    # SAME volume as the agent → same DB file
+      - ./data:/app/data    # SAME host dir as the agent → same DB file (WAL-safe reader)
     networks:
       - charon-net
     depends_on:
-      - charon
+      # Wait until the agent is HEALTHY (its healthcheck passes once the SQLite
+      # file exists), not merely started — otherwise the dashboard boots first,
+      # finds no DB file, and crashes (fileMustExist:true) until restart.
+      charon:
+        condition: service_healthy
+    # Override the image HEALTHCHECK (which checks for the DB file) with an
+    # actual HTTP liveness probe against the dashboard server.
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3210/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
 
   # Cloudflare Tunnel — exposes the dashboard over HTTPS with no open inbound port.
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: charon-cloudflared
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
-    networks:
-      - charon-net
-    depends_on:
-      - charon-dashboard
+  # Gated behind the "tunnel" profile so local `docker compose up` does NOT start it
+  # (it would crash-loop without a real CLOUDFLARE_TUNNEL_TOKEN). On the VPS, run:
+  #   docker compose --profile tunnel up -d
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: charon-cloudflared
+  #   restart: unless-stopped
+  #   profiles:
+  #     - tunnel
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+  #   networks:
+  #     - charon-net
+  #   depends_on:
+  #     - charon-dashboard
 
   # Optional: Add monitoring stack
   # prometheus:
@@ -83,8 +119,7 @@ services:
   #     - GF_SECURITY_ADMIN_PASSWORD=admin
 
 volumes:
-  charon-data:
-    driver: local
+  # charon-data removed — the SQLite DB now lives on the host via bind mount (./data).
   charon-logs:
     driver: local
   # prometheus-data:
