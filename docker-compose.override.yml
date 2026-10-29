@@ -1,0 +1,20 @@
+# Dev-only overrides — auto-merged by `docker compose up` on your machine.
+# NOT used on the VPS (deploy there with: docker compose -f docker-compose.yml up -d).
+#
+# Goal: live code reload for the dashboard. We bind-mount ONLY the source dirs
+# it actually imports (dashboard/ + src/) and run with `node --watch`, which is
+# built into node:20 (zero extra deps). Saving a .js file restarts the process.
+#
+# IMPORTANT: we do NOT mount the whole project (.:/app). That would overlay the
+# host's node_modules (macOS) on top of the container's, and better-sqlite3 is a
+# native module compiled for linux/alpine at build time — clobbering it crashes
+# the dashboard. Mounting only source dirs keeps the built node_modules intact.
+services:
+  charon-dashboard:
+    # `--watch` restarts the process whenever a watched file changes.
+    command: node --watch dashboard/server.js
+    volumes:
+      - ./data:/app/data
+      # Live source — read-only so the container can't write back to your host.
+      - ./dashboard:/app/dashboard:ro
+      - ./src:/app/src:ro

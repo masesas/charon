@@ -95,7 +95,14 @@ body {
 .lesson { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; line-height: 1.4; }
 .lesson:last-child { border-bottom: 0; }
 
-.chart { width: 100%; height: 180px; }
+.chart { width: 100%; !min-height: 180px; }
+
+/* uPlot legend — fit the dark mobile theme and flow below the canvas */
+.chart .u-legend { font-size: 11px !important; color: var(--muted); margin-top: 6px !important; padding: 0; }
+.chart .u-legend .u-series th { font-weight: 600; }
+.chart .u-legend .u-value { color: var(--text); }
+.chart .u-legend .u-marker { width: 8px; height: 8px; }
+.chart .u-legend tr.u-series { gap: 4px; }
 
 /* Buttons */
 .btn { width: 100%; border: 0; border-radius: 12px; padding: 13px; font-weight: 700; font-size: 15px; color: #fff; }
